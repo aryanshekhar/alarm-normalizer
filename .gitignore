@@ -6,3 +6,9 @@
 .idea/
 .vscode/
 *.swp
+venv/
+# SIMBA generated files
+simba_pipeline/data/*.npz
+simba_pipeline/models/*.pt
+simba_pipeline/models/*_history.json
+simba_pipeline/data/*_normalizer.npz
