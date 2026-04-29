@@ -1,4 +1,4 @@
-﻿# Neo4j graph database driver
+# Neo4j graph database driver
 neo4j==5.18.0
 
 # SIMBA ML pipeline
