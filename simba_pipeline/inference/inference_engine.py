@@ -212,17 +212,28 @@ class SimbaInferenceEngine:
         checkpoint   = torch.load(model_path, map_location=self._device)
         model_config = checkpoint.get("config", {})
 
-        # Infer model dimensions from checkpoint
-        state = checkpoint["model_state"]
+        # Infer all architecture dimensions from checkpoint weights
+        state   = checkpoint["model_state"]
         n_cells = adjacency.shape[0]
-        # Infer n_kpis from input projection weight
         n_kpis  = state["gcn.input_proj.weight"].shape[1]
+        hidden  = state["gcn.input_proj.weight"].shape[0]
+        t_layers = sum(1 for k in state if
+                       k.startswith("transformer_branch.transformer.layers.") and
+                       k.endswith(".norm1.weight"))
 
         self._model = Simba(
             n_kpis=n_kpis,
             n_cells=n_cells,
             window_size=window_size,
+            gcn_hidden=hidden,
+            gcn_output=hidden,
+            temporal_dim=hidden,
+            n_heads=4,
+            transformer_layers=t_layers,
+            ff_dim=hidden * 2,
+            fusion_hidden=hidden * 2,
         ).to(self._device)
+
         self._model.load_state_dict(state)
         self._model.eval()
         print(f"  Model loaded. Parameters: {self._model.count_parameters():,}")

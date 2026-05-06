@@ -32,7 +32,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from typing import Optional, Tuple
-
+import warnings
+warnings.filterwarnings("ignore", message="enable_nested_tensor")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Graph Structure Learning Module
@@ -101,10 +102,12 @@ class GraphStructureLearning(nn.Module):
         if prior is not None:
             adj = (1 - self.prior_weight) * adj + self.prior_weight * prior
 
-        # Row-wise softmax normalisation (removes self-loops)
-        adj = adj.fill_diagonal_(0)
+        # Zero diagonal before softmax to remove self-loops
+        # Use out-of-place operation to preserve gradient graph
+        mask = 1 - torch.eye(self.n_cells, device=adj.device)
+        adj = adj * mask
         adj = F.softmax(adj, dim=1)
-        adj = adj.fill_diagonal_(0)  # ensure no self-loops after softmax
+        adj = adj * mask
 
         return adj
 

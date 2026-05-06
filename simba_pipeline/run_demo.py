@@ -79,23 +79,25 @@ def run_demo(args) -> None:
     print(f"  Fault types: excessive_power_reduction, interference")
     print(f"  Anomaly rate: ~2% (following SIMBA paper)")
 
-    # Build a specific fault scenario for the demo
+    # Fault schedule uses cell IDs within range of n_cells
+    # Quick mode: 9 cells (0-8), Full mode: 21 cells (0-20)
+    max_cell = n_cells - 1
     fault_schedule = [
-        # Scenario A: Power reduction on cell 5 (gNB-1, sector 3)
-        {"cell_id": 5, "fault_type": "excessive_power_reduction",
+        # Scenario A: Power reduction on cell 5
+        {"cell_id": min(5, max_cell), "fault_type": "excessive_power_reduction",
          "start_t": 300, "end_t": 420, "severity": 0.85},
-        # Scenario B: Interference on cell 2 (gNB-0, sector 3)
-        {"cell_id": 2, "fault_type": "interference",
+        # Scenario B: Interference on cell 2
+        {"cell_id": min(2, max_cell), "fault_type": "interference",
          "start_t": 600, "end_t": 720, "severity": 0.90},
         # Scenario C: Simultaneous faults on adjacent cells
-        {"cell_id": 8,  "fault_type": "excessive_power_reduction",
+        {"cell_id": min(7, max_cell), "fault_type": "excessive_power_reduction",
          "start_t": 900, "end_t": 960, "severity": 0.75},
-        {"cell_id": 9,  "fault_type": "interference",
+        {"cell_id": min(8, max_cell), "fault_type": "interference",
          "start_t": 910, "end_t": 970, "severity": 0.80},
         # More scattered faults for training diversity
-        {"cell_id": 1,  "fault_type": "interference",
+        {"cell_id": min(1, max_cell), "fault_type": "interference",
          "start_t": 1200, "end_t": 1260, "severity": 0.70},
-        {"cell_id": 6,  "fault_type": "excessive_power_reduction",
+        {"cell_id": min(6, max_cell), "fault_type": "excessive_power_reduction",
          "start_t": 1500, "end_t": 1560, "severity": 0.65},
     ]
     if duration > 1800:
@@ -172,7 +174,7 @@ def run_demo(args) -> None:
             "epochs":       20 if args.quick else 50,
             "batch_size":   32,
             "lr":           1e-3,
-            "patience":     8 if args.quick else 15,
+            "patience":     20 if args.quick else 30,
             "weight_decay": 1e-4,
             "focal_gamma":  2.0,
             "class_weights": class_weights,
