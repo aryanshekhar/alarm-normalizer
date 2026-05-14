@@ -7,8 +7,8 @@ and output routing.  Designed as a single-pass streaming processor.
 from __future__ import annotations
 import json
 import logging
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Type
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from core.base_adapter import BaseAdapter
 from core.model import CanonicalAlarm, NetworkDomain, PerceivedSeverity
@@ -89,24 +89,32 @@ class ValidationStage:
 class EnrichmentStage:
     """
     Adds computed/derived fields to the alarm after normalisation.
-    In production this would call a CMDB or inventory API.
+
+    Accepts an optional ``cmdb_lookup`` callable ``(ne_id: str) -> dict`` so
+    production deployments can inject a real CMDB/inventory API call.  When
+    omitted, falls back to a small static table suitable for demos and tests.
     """
 
-    # Simple static enrichment lookup (replace with CMDB query in production)
-    _DEVICE_META: Dict[str, Dict] = {
-        "router-pe1": {"site": "Mumbai-DC1", "region": "south-asia", "rack": "A-12"},
-        "gNB-SITE-ALPHA-01": {"site": "Site-Alpha", "region": "south-asia", "sector": "1,2,3"},
-        "PSS-32-NODE-A": {"site": "Optical-POP-1", "region": "south-asia", "fiber_route": "Route-7"},
-        "compute-node-07": {"site": "MEC-Edge-1", "region": "south-asia", "cluster": "K8S-PROD"},
+    _FALLBACK_META: Dict[str, Dict] = {
+        "router-pe1":        {"site": "Mumbai-DC1",   "region": "south-asia", "rack": "A-12"},
+        "gNB-SITE-ALPHA-01": {"site": "Site-Alpha",   "region": "south-asia", "sector": "1,2,3"},
+        "PSS-32-NODE-A":     {"site": "Optical-POP-1","region": "south-asia", "fiber_route": "Route-7"},
+        "compute-node-07":   {"site": "MEC-Edge-1",   "region": "south-asia", "cluster": "K8S-PROD"},
     }
+
+    def __init__(self, cmdb_lookup: Optional[Callable[[str], Dict]] = None):
+        self._cmdb_lookup = cmdb_lookup
+
+    def _lookup(self, ne_id: str) -> Dict:
+        if self._cmdb_lookup is not None:
+            return self._cmdb_lookup(ne_id) or {}
+        return self._FALLBACK_META.get(ne_id, {})
 
     def run(self, alarm: CanonicalAlarm) -> CanonicalAlarm:
         ne_id = alarm.alarmed_object.id if alarm.alarmed_object else ""
-        # Normalise NE ID for lookup (strip interface suffix)
-        base_ne = ne_id.split("/")[0]
-        meta = self._DEVICE_META.get(base_ne, {})
+        base_ne = ne_id.split("/")[0]  # strip interface suffix
+        meta = self._lookup(base_ne)
         if meta and alarm.alarmed_object:
-            # Embed site/region into alarm_details extension
             enrichment = f"[site={meta.get('site','')}; region={meta.get('region','')}]"
             if alarm.alarm_details:
                 alarm.alarm_details = alarm.alarm_details + " " + enrichment
@@ -126,7 +134,7 @@ class DeduplicationStage:
 
     def is_duplicate(self, alarm: CanonicalAlarm) -> bool:
         key = self._fingerprint(alarm)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if key in self._seen:
             age = (now - self._seen[key]).total_seconds()
             if age < self._window:
@@ -160,9 +168,14 @@ class NormalisationPipeline:
         )
     """
 
-    def __init__(self, enable_dedup: bool = True, dedup_window_seconds: int = 300):
+    def __init__(
+        self,
+        enable_dedup: bool = True,
+        dedup_window_seconds: int = 300,
+        cmdb_lookup: Optional[Callable[[str], Dict]] = None,
+    ):
         self._validator  = ValidationStage()
-        self._enricher   = EnrichmentStage()
+        self._enricher   = EnrichmentStage(cmdb_lookup)
         self._deduper    = DeduplicationStage(dedup_window_seconds) if enable_dedup else None
         self._stats      = {"processed": 0, "valid": 0, "invalid": 0,
                             "deduplicated": 0, "by_vendor": {}, "by_domain": {}}

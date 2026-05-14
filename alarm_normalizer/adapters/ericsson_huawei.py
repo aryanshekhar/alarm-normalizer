@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from core.base_adapter import BaseAdapter, map_severity, map_probable_cause, infer_alarm_type
 from core.model import (
-    CanonicalAlarm, AlarmedObjectRef, AlarmState, AlarmType,
+    AckState, CanonicalAlarm, AlarmedObjectRef, AlarmState, AlarmType,
     PerceivedSeverity, NetworkDomain
 )
 
@@ -93,9 +93,9 @@ class EricssonENMAdapter(BaseAdapter):
             alarm_details=raw.get("alarmText"),
             alarmed_object_type=mo_type,
             service_affecting=(raw.get("serviceAffecting", "").upper() == "SA"),
-            ack_state=__import__("core.model", fromlist=["AckState"]).AckState.ACKNOWLEDGED
+            ack_state=AckState.ACKNOWLEDGED
                 if raw.get("ackStatus", "").upper() == "ACKNOWLEDGED"
-                else __import__("core.model", fromlist=["AckState"]).AckState.UNACKNOWLEDGED,
+                else AckState.UNACKNOWLEDGED,
             source_system_id="Ericsson-ENM",
             external_alarm_id=str(raw.get("alarmId", "")),
         )

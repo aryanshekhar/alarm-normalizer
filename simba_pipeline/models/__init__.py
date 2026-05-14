@@ -9,7 +9,7 @@ Key exports:
     WeightedFocalLoss       — imbalance-aware focal loss for training
     compute_class_weights   — inverse-frequency class weight computation
 """
-from models.simba import (
+from .simba import (
     Simba,
     GraphStructureLearning,
     GraphConvolutionModule,

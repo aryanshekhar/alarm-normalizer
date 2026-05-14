@@ -11,7 +11,7 @@ Key exports:
     KPI_NAMES               — ordered list of 9 KPI names
     N_KPIS                  — number of KPIs (9)
 """
-from data.dataset_generator import (
+from .dataset_generator import (
     KPITimeSeriesGenerator,
     KPINormalizer,
     build_hexagonal_topology,

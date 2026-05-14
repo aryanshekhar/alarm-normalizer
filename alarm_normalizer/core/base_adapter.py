@@ -246,13 +246,13 @@ class BaseAdapter(ABC):
 
     @staticmethod
     def _now() -> datetime:
-        return datetime.utcnow()
+        return datetime.now(timezone.utc)
 
     @staticmethod
     def _parse_ts(ts_str: str) -> datetime:
         """Parse ISO-8601 or common vendor timestamp strings."""
         if not ts_str:
-            return datetime.utcnow()
+            return datetime.now(timezone.utc)
         for fmt in (
             "%Y-%m-%dT%H:%M:%S.%fZ",
             "%Y-%m-%dT%H:%M:%SZ",
@@ -265,4 +265,4 @@ class BaseAdapter(ABC):
                 return datetime.strptime(ts_str.strip().rstrip("Z"), fmt.rstrip("Z"))
             except ValueError:
                 continue
-        return datetime.utcnow()
+        return datetime.now(timezone.utc)

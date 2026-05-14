@@ -38,7 +38,7 @@ import torch.nn.functional as F
 from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from models.simba import Simba
 from data.dataset_generator import KPINormalizer, KPI_NAMES, N_KPIS
@@ -295,7 +295,7 @@ class SimbaInferenceEngine:
 
         probs_np = probs.squeeze(0).cpu().numpy()   # (N, 3)
         adj_np   = adj.cpu().numpy()
-        ts       = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts       = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         detections = []
         for cell_id in range(self._n_cells):
