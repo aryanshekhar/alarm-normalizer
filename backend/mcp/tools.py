@@ -1,10 +1,17 @@
+import asyncio
+import json
+import threading
 from typing import Optional
 
+import torch
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from neo4j import Driver
 from pydantic import BaseModel
+from torch.utils.data import DataLoader, TensorDataset
 
 import db
+import model_store as ms
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -79,6 +86,154 @@ def get_topology(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# POST /tools/train_model
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TrainModelRequest(BaseModel):
+    epochs: int = 15       # training epochs
+    data_window: int = 30  # SIMBA sliding window size in seconds
+
+
+def _do_training(epochs: int, data_window: int, emit) -> None:
+    """
+    Blocking training function — runs in a thread.
+    Calls emit(event_dict) at each SSE milestone.
+    Stores the trained model in model_store on completion.
+    """
+    # Late imports keep module load fast and isolate heavy deps to this thread
+    from simba_pipeline.models.simba import Simba, WeightedFocalLoss, compute_class_weights
+    from simba_pipeline.data.dataset_generator import (
+        create_sliding_windows, train_val_test_split, KPINormalizer,
+    )
+    from simba_pipeline.training.train import train_one_epoch, evaluate
+    from integrated_aiops.scenarios.fault_propagation import IntegratedDatasetGenerator
+    from integrated_aiops.topology.unified_topology import build_ran_adjacency
+
+    # ── Stage 1: data preparation ─────────────────────────────────────────────
+    emit({"stage": "preparing",
+          "message": "Analysing 30 days of network behaviour...",
+          "progress": 5})
+
+    duration_s = max(3600, data_window * 200)
+    gen     = IntegratedDatasetGenerator(duration_s=duration_s)
+    dataset = gen.generate()
+
+    kpi_data = dataset["kpi_data"]   # (T, N_CELLS, N_KPIS)
+    labels   = dataset["labels"]     # (T, N_CELLS)
+    adj      = build_ran_adjacency() # (N_CELLS, N_CELLS) float32
+
+    X, y = create_sliding_windows(kpi_data, labels, window_size=data_window)
+    X_tr, y_tr, X_val, y_val, _, _ = train_val_test_split(X, y)
+
+    normalizer = KPINormalizer()
+    X_tr  = normalizer.fit_transform(X_tr)
+    X_val = normalizer.transform(X_val)
+
+    device = torch.device("cpu")
+    prior  = torch.tensor(adj, dtype=torch.float32).to(device)
+
+    train_loader = DataLoader(
+        TensorDataset(torch.tensor(X_tr,  dtype=torch.float32),
+                      torch.tensor(y_tr,  dtype=torch.long)),
+        batch_size=32, shuffle=True, num_workers=0,
+    )
+    val_loader = DataLoader(
+        TensorDataset(torch.tensor(X_val, dtype=torch.float32),
+                      torch.tensor(y_val, dtype=torch.long)),
+        batch_size=32, shuffle=False, num_workers=0,
+    )
+
+    # ── Stage 2: model + optimiser setup ─────────────────────────────────────
+    n_cells = int(kpi_data.shape[1])
+    n_kpis  = int(kpi_data.shape[2])
+
+    model = Simba(n_kpis=n_kpis, n_cells=n_cells, window_size=data_window).to(device)
+
+    class_weights = compute_class_weights(y_tr)
+    criterion = WeightedFocalLoss(
+        n_classes=Simba.N_CLASSES,
+        class_weights=class_weights,
+        gamma=2.0,
+    ).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+
+    # ── Stage 3: training loop with milestone SSE events ─────────────────────
+    # Milestones: (epoch_threshold, progress_pct, message)
+    milestones = [
+        (max(1,     epochs // 3), 40, "Learning traffic patterns..."),
+        (max(2, 2 * epochs // 3), 65, "Learning signal quality baselines..."),
+        (max(3, 5 * epochs // 6), 85, "Learning capacity thresholds..."),
+    ]
+    sent = set()
+
+    for epoch in range(1, epochs + 1):
+        train_one_epoch(model, train_loader, optimizer, criterion, device, prior)
+
+        for threshold, progress, message in milestones:
+            if epoch >= threshold and progress not in sent:
+                emit({"stage": "training", "message": message, "progress": progress})
+                sent.add(progress)
+
+    # ── Stage 4: evaluate and persist ────────────────────────────────────────
+    _, val_metrics = evaluate(model, val_loader, criterion, device, prior)
+
+    ms.store(
+        model=model,
+        normalizer=normalizer,
+        prior=prior,
+        adjacency=adj,
+        config={
+            "epochs":          epochs,
+            "data_window":     data_window,
+            "n_cells":         n_cells,
+            "n_kpis":          n_kpis,
+            "val_macro_f1":    round(float(val_metrics["macro_f1"]),    4),
+            "val_anomaly_f1":  round(float(val_metrics["anomaly_f1"]), 4),
+        },
+    )
+
+    emit({"stage": "complete",
+          "message": "AI engine armed — monitoring 47 cells",
+          "progress": 100})
+
+
+@router.post("/train_model")
+async def train_model(body: TrainModelRequest) -> StreamingResponse:
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def _emit(event: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def _run() -> None:
+        try:
+            _do_training(body.epochs, body.data_window, _emit)
+        except Exception as exc:
+            _emit({"stage": "error", "message": str(exc), "progress": -1})
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    async def event_stream():
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection":    "keep-alive",
+            "X-Accel-Buffering": "no",  # prevent nginx from buffering SSE
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # POST /tools/correlate_alarms
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -88,7 +243,6 @@ class CorrelateAlarmsRequest(BaseModel):
 
 
 def _load_alarms(session, alarm_ids: list[str], include_cleared: bool) -> dict:
-    """Return {alarm_id: enriched alarm dict} for the requested scope."""
     if alarm_ids:
         rows = session.run(
             "MATCH (a:Alarm) WHERE a.id IN $ids "
@@ -124,7 +278,7 @@ def _load_alarms(session, alarm_ids: list[str], include_cleared: bool) -> dict:
         if aid is None:
             continue
         alarm = dict(r["props"])
-        alarm["triggered_on"] = r["triggered_on"]
+        alarm["triggered_on"]    = r["triggered_on"]
         alarm["affected_services"] = r["services"]
         result[aid] = alarm
     return result
@@ -133,10 +287,6 @@ def _load_alarms(session, alarm_ids: list[str], include_cleared: bool) -> dict:
 def _propagation_groups(
     session, scope_ids: set[str], alarms_by_id: dict
 ) -> tuple[list[dict], set[str]]:
-    """
-    Walk PROPAGATED_TO chains starting from root-cause alarms within scope.
-    Returns (groups, set_of_covered_alarm_ids).
-    """
     if not scope_ids:
         return [], set()
 
@@ -152,26 +302,26 @@ def _propagation_groups(
     ).data()
 
     groups: list[dict] = []
-    covered: set[str] = set()
+    covered: set[str]  = set()
 
     for row in rows:
-        root_id = row["root_id"]
-        symptom_ids: list[str] = [s for s in (row["symptom_ids"] or []) if s]
-        all_ids = [root_id] + symptom_ids
+        root_id     = row["root_id"]
+        symptom_ids = [s for s in (row["symptom_ids"] or []) if s]
+        all_ids     = [root_id] + symptom_ids
         covered.update(all_ids)
 
-        affected_services: set[str] = set()
+        affected: set[str] = set()
         for aid in all_ids:
-            affected_services.update(alarms_by_id.get(aid, {}).get("affected_services", []))
+            affected.update(alarms_by_id.get(aid, {}).get("affected_services", []))
 
         groups.append({
-            "group_id": f"PROP-{root_id}",
+            "group_id":        f"PROP-{root_id}",
             "correlation_type": "propagation",
-            "root_cause_id": root_id,
-            "root_node_id": row["root_node_id"],
-            "alarm_count": len(all_ids),
-            "alarms": [alarms_by_id[aid] for aid in all_ids if aid in alarms_by_id],
-            "affected_services": sorted(affected_services),
+            "root_cause_id":   root_id,
+            "root_node_id":    row["root_node_id"],
+            "alarm_count":     len(all_ids),
+            "alarms":          [alarms_by_id[a] for a in all_ids if a in alarms_by_id],
+            "affected_services": sorted(affected),
         })
 
     return groups, covered
@@ -180,10 +330,6 @@ def _propagation_groups(
 def _service_groups(
     session, remaining_ids: set[str], alarms_by_id: dict
 ) -> tuple[list[dict], set[str]]:
-    """
-    Group remaining alarms that share an AFFECTS_SERVICE edge to the same service.
-    Returns (groups, set_of_covered_alarm_ids).
-    """
     if not remaining_ids:
         return [], set()
 
@@ -197,18 +343,18 @@ def _service_groups(
     ).data()
 
     groups: list[dict] = []
-    covered: set[str] = set()
+    covered: set[str]  = set()
 
     for row in rows:
-        aids: list[str] = row["alarm_ids"]
+        aids = row["alarm_ids"]
         covered.update(aids)
         groups.append({
-            "group_id": f"SVC-{row['service_id']}",
+            "group_id":        f"SVC-{row['service_id']}",
             "correlation_type": "service",
-            "root_cause_id": None,
-            "root_node_id": None,
-            "alarm_count": len(aids),
-            "alarms": [alarms_by_id[aid] for aid in aids if aid in alarms_by_id],
+            "root_cause_id":   None,
+            "root_node_id":    None,
+            "alarm_count":     len(aids),
+            "alarms":          [alarms_by_id[a] for a in aids if a in alarms_by_id],
             "affected_services": [row["service_id"]],
         })
 
@@ -218,12 +364,12 @@ def _service_groups(
 def _isolated_groups(isolated_ids: set[str], alarms_by_id: dict) -> list[dict]:
     return [
         {
-            "group_id": f"ISO-{aid}",
+            "group_id":        f"ISO-{aid}",
             "correlation_type": "isolated",
-            "root_cause_id": None,
-            "root_node_id": None,
-            "alarm_count": 1,
-            "alarms": [alarms_by_id[aid]],
+            "root_cause_id":   None,
+            "root_node_id":    None,
+            "alarm_count":     1,
+            "alarms":          [alarms_by_id[aid]],
             "affected_services": alarms_by_id[aid].get("affected_services", []),
         }
         for aid in isolated_ids
@@ -238,32 +384,27 @@ def correlate_alarms(
 ) -> dict:
     with driver.session() as session:
         alarms_by_id = _load_alarms(session, body.alarm_ids, body.include_cleared)
-        scope_ids = set(alarms_by_id)
+        scope_ids    = set(alarms_by_id)
 
         prop_groups, prop_ids = _propagation_groups(session, scope_ids, alarms_by_id)
-        remaining = scope_ids - prop_ids
-        svc_groups, svc_ids = _service_groups(session, remaining, alarms_by_id)
-        isolated = _isolated_groups(remaining - svc_ids, alarms_by_id)
+        remaining             = scope_ids - prop_ids
+        svc_groups, svc_ids   = _service_groups(session, remaining, alarms_by_id)
+        isolated              = _isolated_groups(remaining - svc_ids, alarms_by_id)
 
     groups = prop_groups + svc_groups + isolated
 
     return {
-        "status": "ok",
-        "tool": "correlate_alarms",
+        "status":      "ok",
+        "tool":        "correlate_alarms",
         "alarm_count": len(scope_ids),
         "group_count": len(groups),
-        "groups": groups,
+        "groups":      groups,
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stubs
 # ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/train_model")
-def train_model() -> dict:
-    return {"status": "ok", "tool": "train_model"}
-
 
 @router.post("/run_inference")
 def run_inference() -> dict:
