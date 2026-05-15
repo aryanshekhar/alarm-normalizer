@@ -7,6 +7,8 @@
 .vscode/
 *.swp
 venv/
+node_modules/
+dist/
 # SIMBA generated files
 simba_pipeline/data/*.npz
 simba_pipeline/models/*.pt
