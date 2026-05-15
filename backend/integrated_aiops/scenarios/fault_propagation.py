@@ -21,11 +21,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass, field
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from topology.unified_topology import (
+from ..topology.unified_topology import (
     ALL_CELLS, N_CELLS, GNB_LIST, GNB_BY_ID, CELL_BY_INDEX,
     OPTICAL_NODES, IP_NODES, FIBER_SPANS, SPAN_TO_PE, PE_TO_CELLS,
     cells_affected_by_span, GNB_BACKHAUL,

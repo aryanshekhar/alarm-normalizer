@@ -24,7 +24,6 @@ Usage:
     python run_integrated_demo.py --skip-train
 """
 
-import sys
 import os
 import json
 import argparse
@@ -33,13 +32,11 @@ import torch
 from datetime import datetime
 from torch.utils.data import DataLoader, TensorDataset
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from topology.unified_topology import (
+from .topology.unified_topology import (
     N_CELLS, ALL_CELLS, GNB_LIST, build_ran_adjacency,
     OPTICAL_NODES, IP_NODES, KPI_NAMES
 )
-from scenarios.fault_propagation import (
+from .scenarios.fault_propagation import (
     IntegratedDatasetGenerator, AlarmEvent
 )
 
@@ -192,11 +189,8 @@ def prepare_simba_data(kpi_data: np.ndarray, labels: np.ndarray,
 def train_simba(dataset: dict, args, model_path: str) -> object:
     print_banner("Step 4 — SIMBA Training on Cross-Domain KPI Stream")
 
-    # Import SIMBA components
-    simba_path = os.path.join(os.path.dirname(__file__), "..", "simba_pipeline")
-    sys.path.insert(0, simba_path)
-    from models.simba import Simba, WeightedFocalLoss, compute_class_weights
-    from training.train import train, evaluate
+    from simba_pipeline.models.simba import Simba, WeightedFocalLoss, compute_class_weights
+    from simba_pipeline.training.train import train, evaluate
 
     window   = 20 if args.quick else 30
     device   = torch.device("cpu")
@@ -586,9 +580,7 @@ def main():
         model, norm_params, adj_np = train_simba(dataset, args, model_path)
     else:
         print_banner("Step 4 — Loading saved SIMBA model")
-        simba_path = os.path.join(os.path.dirname(__file__), "..", "simba_pipeline")
-        sys.path.insert(0, simba_path)
-        from models.simba import Simba
+        from simba_pipeline.models.simba import Simba
         adj_np  = build_ran_adjacency()
         ckpt    = torch.load(model_path, map_location="cpu")
         state   = ckpt["model_state"]
