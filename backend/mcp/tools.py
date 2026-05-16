@@ -89,6 +89,8 @@ class TrainModelRequest(BaseModel):
 
 
 def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) -> None:
+    import math
+    import time
     from torch.utils.data import DataLoader, TensorDataset
     from simba_pipeline.models.simba import Simba, WeightedFocalLoss, compute_class_weights
     from simba_pipeline.data.dataset_generator import (
@@ -103,7 +105,7 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
           "message": "Analysing 30 days of network behaviour...", "progress": 0})
 
     if demo_mode:
-        epochs     = 25
+        epochs     = 15
         lr         = 0.01
         duration_s = 6000
 
@@ -191,12 +193,45 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
         (max(3, 3 * epochs // 5),     60, "Learning capacity thresholds..."),
         (max(4, 4 * epochs // 5),     80, "Calibrating anomaly detection sensitivity..."),
     ]
-    sent = set()
+    sent       = set()
+    _last_emit = [time.time()]   # mutable cell for watchdog
+
+    def _emit_and_ping(event: dict) -> None:
+        emit(event)
+        _last_emit[0] = time.time()
+
     for epoch in range(1, epochs + 1):
-        train_one_epoch(model, train_loader, optimizer, criterion, device, prior)
+        # Watchdog: abort if no SSE event has been emitted for >30 s
+        if time.time() - _last_emit[0] > 30:
+            raise RuntimeError(
+                f"Training watchdog: no SSE event for >30 s at epoch {epoch}"
+            )
+
+        logger.info("_do_training: starting epoch %d/%d", epoch, epochs)
+        try:
+            epoch_loss = train_one_epoch(
+                model, train_loader, optimizer, criterion, device, prior
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Exception in epoch {epoch}: {exc}") from exc
+
+        # NaN guard — reduce lr and continue rather than hanging silently
+        if not math.isfinite(epoch_loss):
+            logger.warning(
+                "_do_training: NaN/Inf loss at epoch %d — halving lr and skipping", epoch
+            )
+            for pg in optimizer.param_groups:
+                pg["lr"] = max(pg["lr"] * 0.5, 1e-5)
+            for m in model.modules():
+                if hasattr(m, "reset_parameters"):
+                    m.reset_parameters()
+            continue
+
+        logger.info("_do_training: epoch %d/%d loss=%.4f", epoch, epochs, epoch_loss)
+
         for milestone_epoch, progress, message in milestones:
             if epoch >= milestone_epoch and progress not in sent:
-                emit({"stage": "training", "message": message, "progress": progress})
+                _emit_and_ping({"stage": "training", "message": message, "progress": progress})
                 sent.add(progress)
 
     _, val_metrics = evaluate(model, val_loader, criterion, device, prior)
