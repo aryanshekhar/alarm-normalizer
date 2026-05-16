@@ -106,7 +106,7 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
 
     if demo_mode:
         epochs     = 15
-        lr         = 0.01
+        lr         = 1e-3
         duration_s = 6000
 
         from integrated_aiops.scenarios.fault_propagation import (
@@ -187,13 +187,21 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
 
-    milestones = [
-        (max(1,     epochs // 5),     20, "Learning normal traffic patterns..."),
-        (max(2, 2 * epochs // 5),     40, "Learning signal quality baselines..."),
-        (max(3, 3 * epochs // 5),     60, "Learning capacity thresholds..."),
-        (max(4, 4 * epochs // 5),     80, "Calibrating anomaly detection sensitivity..."),
+    # Stage labels shown in the UI checklist (keyed by progress threshold)
+    _STAGE_MESSAGES = [
+        (0.20, "Learning normal traffic patterns..."),
+        (0.40, "Learning signal quality baselines..."),
+        (0.60, "Learning capacity thresholds..."),
+        (1.00, "Calibrating anomaly detection sensitivity..."),
     ]
-    sent       = set()
+
+    def _stage_message(epoch: int) -> str:
+        frac = epoch / epochs
+        for threshold, msg in _STAGE_MESSAGES:
+            if frac <= threshold:
+                return msg
+        return _STAGE_MESSAGES[-1][1]
+
     _last_emit = [time.time()]   # mutable cell for watchdog
 
     def _emit_and_ping(event: dict) -> None:
@@ -208,31 +216,71 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
             )
 
         logger.info("_do_training: starting epoch %d/%d", epoch, epochs)
-        try:
-            epoch_loss = train_one_epoch(
-                model, train_loader, optimizer, criterion, device, prior
-            )
-        except Exception as exc:
-            raise RuntimeError(f"Exception in epoch {epoch}: {exc}") from exc
 
-        # NaN guard — reduce lr and continue rather than hanging silently
+        # ── Inline per-batch training loop with NaN diagnostics ──────────
+        model.train()
+        total_loss  = 0.0
+        nan_batches = 0
+        for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
+            X_batch = X_batch.to(device)
+            y_batch = y_batch.to(device)
+            pr_b    = prior.to(device)
+
+            optimizer.zero_grad()
+            try:
+                logits, _ = model(X_batch, pr_b)
+                loss      = criterion(logits, y_batch)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Forward pass failed at epoch {epoch} batch {batch_idx}: {exc}"
+                ) from exc
+
+            batch_loss = loss.item()
+            if not math.isfinite(batch_loss):
+                nan_batches += 1
+                logger.warning(
+                    "epoch %d batch %d: NaN/Inf loss — "
+                    "X min=%.3f max=%.3f mean=%.3f  y unique=%s",
+                    epoch, batch_idx,
+                    float(X_batch.min()), float(X_batch.max()), float(X_batch.mean()),
+                    y_batch.unique().tolist(),
+                )
+                # Skip this batch; optimizer state is clean (zero_grad already called)
+                continue
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            total_loss += batch_loss
+
+            if batch_idx % 20 == 0:
+                logger.debug(
+                    "epoch %d batch %d/%d loss=%.4f",
+                    epoch, batch_idx, len(train_loader), batch_loss,
+                )
+
+        good_batches = len(train_loader) - nan_batches
+        epoch_loss   = total_loss / good_batches if good_batches > 0 else float("nan")
+        # ─────────────────────────────────────────────────────────────────
+
         if not math.isfinite(epoch_loss):
             logger.warning(
-                "_do_training: NaN/Inf loss at epoch %d — halving lr and skipping", epoch
+                "_do_training: all batches NaN at epoch %d — halving lr", epoch
             )
             for pg in optimizer.param_groups:
                 pg["lr"] = max(pg["lr"] * 0.5, 1e-5)
-            for m in model.modules():
-                if hasattr(m, "reset_parameters"):
-                    m.reset_parameters()
-            continue
 
         logger.info("_do_training: epoch %d/%d loss=%.4f", epoch, epochs, epoch_loss)
 
-        for milestone_epoch, progress, message in milestones:
-            if epoch >= milestone_epoch and progress not in sent:
-                _emit_and_ping({"stage": "training", "message": message, "progress": progress})
-                sent.add(progress)
+        # Emit after EVERY epoch so the watchdog always resets.
+        # progress goes from ~16 % (epoch 1) up to 90 % (epoch N), leaving
+        # room for 0 % (preparing) and 100 % (complete).
+        epoch_progress = min(90, int(epoch / epochs * 80) + 10)
+        _emit_and_ping({
+            "stage":    "training",
+            "message":  _stage_message(epoch),
+            "progress": epoch_progress,
+        })
 
     _, val_metrics = evaluate(model, val_loader, criterion, device, prior)
 

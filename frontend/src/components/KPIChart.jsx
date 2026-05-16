@@ -6,10 +6,10 @@ const SEV_BADGE = {
 };
 
 const TRAIN_STAGES = [
-  { label: 'Preparing data',                   doneAt: 20  },
-  { label: 'Learning normal traffic patterns',  doneAt: 40  },
-  { label: 'Learning signal quality baselines', doneAt: 60  },
-  { label: 'Learning capacity thresholds',      doneAt: 80  },
+  { label: 'Preparing data',                   doneAt: 16  },
+  { label: 'Learning normal traffic patterns',  doneAt: 35  },
+  { label: 'Learning signal quality baselines', doneAt: 56  },
+  { label: 'Learning capacity thresholds',      doneAt: 74  },
   { label: 'Calibrating anomaly sensitivity',   doneAt: 101 },
 ];
 
