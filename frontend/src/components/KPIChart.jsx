@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 const SEV_COLOR = { high: '#ef4444', medium: '#f97316', low: '#eab308' };
 const SEV_BADGE = {
   high:   'bg-red-950    text-red-300    border-red-800',
@@ -106,13 +108,18 @@ const STAGE_META = {
 };
 
 function CorrelationView({ correlationProgress, correlationResult }) {
+  const [showAll, setShowAll] = useState(false);
   const prog = correlationProgress ?? correlationResult;
   if (!prog) return null;
 
   const { stage, message, progress = 0, alarm_count = 0 } = prog;
-  const { color, icon } = STAGE_META[stage] ?? { color: 'text-gray-400', icon: '•' };
-  const isComplete   = stage === 'complete';
-  const alarmsFlash  = stage === 'alarms_firing' || stage === 'correlating' || isComplete;
+  const { color } = STAGE_META[stage] ?? { color: 'text-gray-400' };
+  const isComplete  = stage === 'complete';
+  const alarmsFlash = stage === 'alarms_firing' || stage === 'correlating' || isComplete;
+
+  const allAlarms     = prog.alarms ?? [];
+  const displayAlarms = showAll ? allAlarms : allAlarms.filter((a) => a.isRootCause);
+  const leadMin       = prog.simba_lead_time_minutes;
 
   return (
     <div className={`bg-gray-900 rounded-lg border p-4 space-y-3 ${
@@ -123,9 +130,7 @@ function CorrelationView({ correlationProgress, correlationResult }) {
         <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
           Alarm Correlation
         </h2>
-        {progress > 0 && (
-          <span className="text-xs text-gray-500">{progress}%</span>
-        )}
+        {progress > 0 && <span className="text-xs text-gray-500">{progress}%</span>}
       </div>
 
       {/* Progress bar */}
@@ -145,41 +150,109 @@ function CorrelationView({ correlationProgress, correlationResult }) {
         </div>
       )}
 
-      {/* Current stage message */}
+      {/* Stage message */}
       <p className={`text-sm font-medium min-h-[1.25rem] ${color}`}>{message}</p>
 
-      {/* Lead-time hero when complete */}
-      {isComplete && prog.simba_lead_time_minutes != null && (
-        <div className="mt-2 rounded bg-green-950 border border-green-700 px-4 py-3 text-center">
-          <p className="text-2xl font-bold text-green-300">
-            ✅ {prog.simba_lead_time_minutes} min early
-          </p>
-          <p className="text-xs text-green-500 mt-1">
-            SIMBA detected this fault {prog.simba_lead_time_minutes} minutes before first alarm
+      {/* Lead-time hero + timeline */}
+      {isComplete && leadMin != null && (
+        <div className="rounded bg-green-950 border border-green-700 px-4 py-3 space-y-2">
+          <div className="text-center">
+            <p className="text-2xl font-bold text-green-300">
+              +{leadMin > 0 ? `${leadMin} min` : '< 1 min'} early
+            </p>
+            <p className="text-xs text-green-500 mt-0.5">
+              SIMBA detected this fault{' '}
+              {leadMin > 0 ? `${leadMin} minutes` : 'moments'} before first alarm
+            </p>
+          </div>
+
+          {/* Timeline graphic */}
+          <div className="flex items-center gap-2 pt-1">
+            <div className="flex flex-col items-center shrink-0 text-center">
+              <span className="font-bold text-green-400 text-[10px] leading-none">SIMBA Alert</span>
+              <span className="text-green-700 text-[9px]">T+0</span>
+            </div>
+            <div className="flex-1 flex flex-col items-center gap-0.5">
+              <span className="text-green-400 text-[10px] font-mono">
+                {leadMin > 0 ? `${leadMin} min` : '< 1 min'}
+              </span>
+              <div className="w-full flex items-center gap-0.5">
+                <div className="flex-1 border-t-2 border-dashed border-green-700" />
+                <span className="text-green-600 text-xs">►</span>
+              </div>
+            </div>
+            <div className="flex flex-col items-center shrink-0 text-center">
+              <span className="font-bold text-red-400 text-[10px] leading-none">First Alarm</span>
+              <span className="text-red-700 text-[9px]">
+                T+{leadMin > 0 ? `${leadMin}m` : '0'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Suppression summary */}
+      {isComplete && prog.total_alarms != null && (
+        <div className="rounded bg-gray-800 border border-gray-700 px-3 py-2 text-center space-y-0.5">
+          <div className="text-xs">
+            <span className="text-orange-300 font-semibold">{prog.total_alarms} alarms</span>
+            <span className="text-gray-500"> → </span>
+            <span className="text-red-300 font-semibold">
+              {prog.root_cause_alarm_count ?? 1} root cause
+            </span>
+            <span className="text-gray-500"> → </span>
+            <span className="text-gray-400 font-semibold">
+              {prog.suppressed_count ?? 0} suppressed
+            </span>
+          </div>
+          <p className="text-[10px] text-gray-600">
+            {prog.suppression_logic ?? 'Propagation-based deduplication'}
           </p>
         </div>
       )}
 
-      {/* Alarm cascade list when complete */}
-      {isComplete && (prog.alarms ?? []).length > 0 && (
-        <div className="space-y-1.5 max-h-52 overflow-y-auto pr-0.5 mt-1">
-          {(prog.alarms ?? []).map((a) => (
-            <div key={a.id} className="flex items-start gap-2 text-xs rounded bg-gray-800 border border-gray-700 px-2 py-1.5">
-              <span className={`shrink-0 font-bold uppercase px-1 rounded text-[9px] ${
-                a.severity === 'critical' ? 'bg-red-900 text-red-300' :
-                a.severity === 'major'    ? 'bg-orange-900 text-orange-300' :
-                                            'bg-yellow-900 text-yellow-300'
-              }`}>{a.severity}</span>
-              <div className="min-w-0">
-                <span className="font-mono text-gray-200">{a.deviceId}</span>
-                <span className="text-gray-500"> · {a.domain}</span>
-                <p className="text-gray-500 truncate">{a.specificProblem.replace(/_/g, ' ')}</p>
+      {/* Alarm list with show-all toggle */}
+      {isComplete && allAlarms.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-gray-500">
+              {showAll ? `All ${allAlarms.length} alarms` : 'Root cause only'}
+            </span>
+            <button
+              onClick={() => setShowAll((v) => !v)}
+              className="text-[10px] px-2 py-0.5 rounded border border-gray-600 bg-gray-800 text-gray-400 hover:text-gray-200 transition-colors"
+            >
+              {showAll ? 'Show root cause' : 'Show all'}
+            </button>
+          </div>
+
+          <div className="max-h-52 overflow-y-auto pr-0.5 space-y-1.5">
+            {displayAlarms.map((a) => (
+              <div
+                key={a.id}
+                className="flex items-start gap-2 text-xs rounded bg-gray-800 border border-gray-700 px-2 py-1.5"
+              >
+                <span className={`shrink-0 font-bold uppercase px-1 rounded text-[9px] ${
+                  a.severity === 'critical' ? 'bg-red-900 text-red-300' :
+                  a.severity === 'major'    ? 'bg-orange-900 text-orange-300' :
+                                              'bg-yellow-900 text-yellow-300'
+                }`}>{a.severity}</span>
+                <div className="min-w-0">
+                  <span className="font-mono text-gray-200">{a.deviceId}</span>
+                  <span className="text-gray-500"> · {a.domain}</span>
+                  <p className="text-gray-500 truncate">{a.specificProblem.replace(/_/g, ' ')}</p>
+                </div>
+                <div className="ml-auto shrink-0 flex gap-1">
+                  {a.isRootCause && (
+                    <span className="text-[9px] px-1 rounded bg-yellow-900 text-yellow-300 font-bold">ROOT</span>
+                  )}
+                  {!a.isRootCause && showAll && (
+                    <span className="text-[9px] px-1 rounded bg-gray-700 text-gray-400 font-bold">SUP</span>
+                  )}
+                </div>
               </div>
-              {a.isRootCause && (
-                <span className="ml-auto shrink-0 text-[9px] px-1 rounded bg-yellow-900 text-yellow-300 font-bold">ROOT</span>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
     </div>

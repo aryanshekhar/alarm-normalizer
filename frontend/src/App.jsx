@@ -35,7 +35,7 @@ export default function App() {
     setCorrelationProgress(prog);
   }, []);
 
-  // Node IDs to highlight on the map during / after the alarm storm
+  // All devices involved in the alarm storm (highlighted during / after correlation)
   const alarmingNodeIds = useMemo(() => {
     const stage = correlationProgress?.stage;
     if (stage === 'alarms_firing' || stage === 'correlating' || stage === 'complete') {
@@ -46,6 +46,26 @@ export default function App() {
     }
     return new Set();
   }, [correlationProgress, correlationResult]);
+
+  // Root-cause devices (known only after correlation is complete)
+  const rootCauseNodeIds = useMemo(() => {
+    if (correlationResult?.stage === 'complete') {
+      return new Set(correlationResult.root_cause_device_ids ?? []);
+    }
+    return new Set();
+  }, [correlationResult]);
+
+  // Suppressed = alarming but not root cause (shown only after complete)
+  const suppressedNodeIds = useMemo(() => {
+    if (correlationResult?.stage === 'complete' && rootCauseNodeIds.size > 0) {
+      const suppressed = new Set();
+      for (const id of alarmingNodeIds) {
+        if (!rootCauseNodeIds.has(id)) suppressed.add(id);
+      }
+      return suppressed;
+    }
+    return new Set();
+  }, [correlationResult, alarmingNodeIds, rootCauseNodeIds]);
 
   const handleTrainingProgress = useCallback((prog) => {
     if (prog === null) {
@@ -124,7 +144,12 @@ export default function App() {
 
         {/* Centre — topology + KPI ────────────────────────────────────── */}
         <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
-          <TopologyMap topology={topology} alarmingNodeIds={alarmingNodeIds} />
+          <TopologyMap
+            topology={topology}
+            alarmingNodeIds={alarmingNodeIds}
+            rootCauseNodeIds={rootCauseNodeIds}
+            suppressedNodeIds={suppressedNodeIds}
+          />
           <KPIChart
             inferenceResult={inferenceResult}
             trainingProgress={trainingProgress}

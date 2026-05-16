@@ -88,6 +88,24 @@ def get_training_mode() -> dict:
     return {"demo_mode": settings.demo_mode, "mode": "demo" if settings.demo_mode else "full"}
 
 
+@router.get("/get_lead_time")
+def get_lead_time() -> dict:
+    if not ms.is_ready():
+        raise HTTPException(status_code=400, detail="Model not trained yet.")
+    state = ms.load()
+    it = state.inference_timestamp
+    at = state.alarms_fired_timestamp
+    lead_time: Optional[int] = None
+    if it is not None and at is not None:
+        lead_time = max(0, int((at - it).total_seconds() // 60))
+    return {
+        "status": "ok",
+        "inference_timestamp":    it.isoformat() if it else None,
+        "alarms_fired_timestamp": at.isoformat() if at else None,
+        "lead_time_minutes":      lead_time,
+    }
+
+
 class TrainModelRequest(BaseModel):
     epochs: int = 5
     data_window: int = 30
@@ -529,6 +547,9 @@ def run_inference(body: RunInferenceRequest) -> dict:
             "repair_action": _REPAIR_ACTIONS[_FAULT_NAMES[fault_class]],
         })
 
+    if ms._state is not None:
+        ms._state.inference_timestamp = datetime.now(timezone.utc)
+
     return {
         "status":        "ok",
         "tool":          "run_inference",
@@ -844,8 +865,12 @@ _FIBER_CUT_PROPAGATION = [
 ]
 
 
-def _write_fiber_cut_alarms(driver) -> None:
+def _write_fiber_cut_alarms(driver) -> dict:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if ms._state is not None:
+        ms._state.alarms_fired_timestamp = datetime.now(timezone.utc)
+
     with driver.session() as session:
         session.run("MATCH (a:Alarm) DETACH DELETE a")
         for alarm in _FIBER_CUT_ALARMS:
@@ -883,7 +908,35 @@ def _write_fiber_cut_alarms(driver) -> None:
                 MATCH (parent:Alarm {id: $p}) MATCH (child:Alarm {id: $c})
                 MERGE (parent)-[:PROPAGATED_TO]->(child)
             """, p=parent_id, c=child_id)
-    logger.info("_write_fiber_cut_alarms: wrote %d alarms to Neo4j", len(_FIBER_CUT_ALARMS))
+
+        # Root causes = alarms with no incoming PROPAGATED_TO edge
+        root_rows = session.run(
+            "MATCH (a:Alarm) WHERE NOT ()-[:PROPAGATED_TO]->(a) "
+            "RETURN a.id AS id, a.deviceId AS device_id"
+        ).data()
+        root_cause_alarm_ids  = [r["id"] for r in root_rows]
+        root_cause_device_ids = list({r["device_id"] for r in root_rows if r["device_id"]})
+
+        # Mark downstream alarms as suppressed in Neo4j
+        session.run(
+            "MATCH ()-[:PROPAGATED_TO]->(a:Alarm) SET a.status = 'SUPPRESSED'"
+        )
+
+    suppressed_count = len(_FIBER_CUT_ALARMS) - len(root_cause_alarm_ids)
+    logger.info(
+        "_write_fiber_cut_alarms: wrote %d alarms — %d root cause, %d suppressed",
+        len(_FIBER_CUT_ALARMS), len(root_cause_alarm_ids), suppressed_count,
+    )
+    return {
+        "total_alarms":          len(_FIBER_CUT_ALARMS),
+        "root_cause_alarm_ids":  root_cause_alarm_ids,
+        "root_cause_device_ids": root_cause_device_ids,
+        "suppressed_count":      suppressed_count,
+        "suppression_logic":     (
+            "Alarms with no incoming PROPAGATED_TO edges identified as root causes; "
+            "downstream alarms suppressed"
+        ),
+    }
 
 
 @router.post("/correlate_alarms")
@@ -941,30 +994,54 @@ async def correlate_alarms(
                     "progress": 50, "alarms": []})
         await asyncio.sleep(2)
 
-        # Inject fiber-cut alarms into Neo4j
+        # Inject fiber-cut alarms into Neo4j; returns suppression info
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _write_fiber_cut_alarms, driver)
+        suppression_info = await loop.run_in_executor(None, _write_fiber_cut_alarms, driver)
         await asyncio.sleep(2)
 
+        total_alarms = suppression_info.get("total_alarms", len(alarm_dicts))
         yield _sse({"stage": "alarms_firing",
-                    "message": "⚠️ Threshold breached — alarms now firing in fault management system!",
-                    "progress": 70, "alarm_count": 24,
+                    "message": f"⚠️ Threshold breached — {total_alarms} alarms now firing in fault management system!",
+                    "progress": 70, "alarm_count": total_alarms,
                     "alarming_device_ids": _ALARMING_DEVICE_IDS})
         await asyncio.sleep(2)
 
         yield _sse({"stage": "correlating",
-                    "message": "Correlating 24 alarms with SIMBA predictions...",
+                    "message": f"Correlating {total_alarms} alarms with SIMBA predictions...",
                     "progress": 85, "alarms": []})
         await asyncio.sleep(2)
 
+        # Calculate real lead time from model_store timestamps
+        lead_time_minutes = 0
+        state = ms.load()
+        if (state is not None
+                and state.inference_timestamp is not None
+                and state.alarms_fired_timestamp is not None):
+            delta = state.alarms_fired_timestamp - state.inference_timestamp
+            lead_time_minutes = max(0, int(delta.total_seconds() // 60))
+
+        root_cause_device_ids = suppression_info.get("root_cause_device_ids", [])
+        suppressed_count      = suppression_info.get("suppressed_count", 0)
+        root_cause_alarm_ids  = suppression_info.get("root_cause_alarm_ids", [])
+
+        lead_desc = (
+            f"SIMBA detected this fault {lead_time_minutes} minutes before first alarm"
+            if lead_time_minutes > 0
+            else "SIMBA detected this fault before alarms fired"
+        )
+
         yield _sse({"stage": "complete",
-                    "message": "✅ 9/9 SIMBA predictions confirmed by alarms. "
-                               "SIMBA detected this fault 15 minutes before first alarm.",
+                    "message": f"✅ 9/9 SIMBA predictions confirmed by alarms. {lead_desc}.",
                     "progress": 100,
                     "alarms": alarm_dicts,
-                    "alarm_count": len(alarm_dicts),
-                    "simba_lead_time_minutes": 15,
+                    "alarm_count": total_alarms,
+                    "total_alarms": total_alarms,
+                    "simba_lead_time_minutes": lead_time_minutes,
                     "alarming_device_ids": _ALARMING_DEVICE_IDS,
+                    "root_cause_device_ids": root_cause_device_ids,
+                    "root_cause_alarm_count": len(root_cause_alarm_ids),
+                    "suppressed_count": suppressed_count,
+                    "suppression_logic": suppression_info.get("suppression_logic", ""),
                     "groups": groups})
 
     return StreamingResponse(

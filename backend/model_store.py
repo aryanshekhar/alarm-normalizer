@@ -23,6 +23,8 @@ class ModelState:
     trained_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    inference_timestamp: Optional[datetime] = None
+    alarms_fired_timestamp: Optional[datetime] = None
 
 
 _state: Optional[ModelState] = None

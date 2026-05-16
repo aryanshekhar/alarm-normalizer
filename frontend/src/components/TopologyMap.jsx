@@ -82,7 +82,12 @@ const LEGEND = [
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export default function TopologyMap({ topology, alarmingNodeIds = new Set() }) {
+export default function TopologyMap({
+  topology,
+  alarmingNodeIds   = new Set(),
+  rootCauseNodeIds  = new Set(),
+  suppressedNodeIds = new Set(),
+}) {
   const containerRef  = useRef(null);
   const fileInputRef  = useRef(null);
   const graphRef      = useRef(null);
@@ -106,15 +111,15 @@ export default function TopologyMap({ topology, alarmingNodeIds = new Set() }) {
     } catch {/* ignore parse/storage errors */}
   }, []);
 
-  // Pulse animation for alarming nodes — tick every 600 ms and force canvas redraw
+  // Pulse animation for alarming / root-cause nodes — tick every 600 ms
   useEffect(() => {
-    if (alarmingNodeIds.size === 0) return;
+    if (alarmingNodeIds.size === 0 && rootCauseNodeIds.size === 0) return;
     const id = setInterval(() => {
       setPulsePhase((p) => p + 1);
       graphRef.current?.refresh();
     }, 600);
     return () => clearInterval(id);
-  }, [alarmingNodeIds]);
+  }, [alarmingNodeIds, rootCauseNodeIds]);
 
   // Track canvas container width
   useLayoutEffect(() => {
@@ -241,11 +246,21 @@ export default function TopologyMap({ topology, alarmingNodeIds = new Set() }) {
   // ── Node painter ──────────────────────────────────────────────────────────
   const paintNode = useCallback((node, ctx, globalScale) => {
     const { color } = nodeStyle(node);
-    const r          = Math.max(2, 5 / globalScale);
-    const isAlarming = alarmingNodeIds.has(node.id);
+    const r            = Math.max(2, 5 / globalScale);
+    const isRootCause  = rootCauseNodeIds.has(node.id);
+    const isSuppressed = suppressedNodeIds.has(node.id);
+    // Plain red pulse for generic alarming (before differentiation is known)
+    const isAlarming   = alarmingNodeIds.has(node.id) && !isRootCause && !isSuppressed;
 
-    if (isAlarming) {
-      // Pulsing outer halo
+    if (isRootCause) {
+      // Bright red pulsing halo (larger than plain alarming)
+      const pulse  = 0.5 + 0.5 * Math.sin(pulsePhase * Math.PI * 0.8);
+      const outerR = r * (2.5 + 1.0 * pulse);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, outerR, 0, 2 * Math.PI);
+      ctx.fillStyle = `rgba(239, 68, 68, ${0.30 + 0.25 * pulse})`;
+      ctx.fill();
+    } else if (isAlarming) {
       const pulse  = 0.5 + 0.5 * Math.sin(pulsePhase * Math.PI * 0.8);
       const outerR = r * (2.0 + 0.8 * pulse);
       ctx.beginPath();
@@ -254,14 +269,24 @@ export default function TopologyMap({ topology, alarmingNodeIds = new Set() }) {
       ctx.fill();
     }
 
+    const fillColor   = isRootCause  ? '#ef4444'
+                      : isSuppressed ? '#f97316'
+                      : isAlarming   ? '#ef4444'
+                      : color;
+    const strokeColor = isRootCause  ? 'rgba(239,68,68,1.0)'
+                      : isSuppressed ? 'rgba(249,115,22,0.8)'
+                      : isAlarming   ? 'rgba(239,68,68,0.8)'
+                      : 'rgba(0,0,0,0.45)';
+    const strokeW     = (isRootCause ? 1.5 : isAlarming ? 1.2 : isSuppressed ? 1.0 : 0.5) / globalScale;
+
     ctx.beginPath();
     ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
-    ctx.fillStyle   = isAlarming ? '#ef4444' : color;
+    ctx.fillStyle   = fillColor;
     ctx.fill();
-    ctx.strokeStyle = isAlarming ? 'rgba(239,68,68,0.8)' : 'rgba(0,0,0,0.45)';
-    ctx.lineWidth   = (isAlarming ? 1.2 : 0.5) / globalScale;
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth   = strokeW;
     ctx.stroke();
-  }, [alarmingNodeIds, pulsePhase]);
+  }, [alarmingNodeIds, rootCauseNodeIds, suppressedNodeIds, pulsePhase]);
 
   if (!topology?.nodes?.length) {
     return (

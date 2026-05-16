@@ -8,6 +8,12 @@ const BASE = import.meta.env.VITE_BACKEND_URL ?? '';
 
 // ── Training mode ─────────────────────────────────────────────────────────────
 
+export async function getLeadTime() {
+  const res = await fetch(`${BASE}/tools/get_lead_time`);
+  if (!res.ok) throw new Error(`get_lead_time failed: ${res.status}`);
+  return res.json();
+}
+
 export async function getTrainingMode() {
   const res = await fetch(`${BASE}/tools/training_mode`);
   if (!res.ok) return { mode: 'demo', demo_mode: true };
