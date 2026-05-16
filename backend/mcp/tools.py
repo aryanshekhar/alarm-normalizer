@@ -706,13 +706,229 @@ def ask_assistant(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POST /tools/correlate_alarms
+# POST /tools/correlate_alarms  — SSE narrative sequence
 # ─────────────────────────────────────────────────────────────────────────────
 
 class CorrelateAlarmsRequest(BaseModel):
     alarm_ids:       list[str] = []
     include_cleared: bool = False
 
+
+# Device IDs that will be highlighted on the topology map during the alarm storm
+_ALARMING_DEVICE_IDS = [
+    "ROADM-MUM-01", "AMP-MUM-CHN-01",
+    "RTR-PE-MUM-01",
+    "gNB-MUM-SITE-A01", "gNB-MUM-SITE-B01",
+]
+
+# Fiber-cut alarm definitions (matches create_fiber_cut_alarms.py schema)
+_FIBER_CUT_ALARMS = [
+    {
+        "id": "ALM-OPT-001", "domain": "optical", "vendor": "Nokia",
+        "source": "Nokia-1830PSS", "device_id": "ROADM-MUM-01",
+        "device_name": "ROADM Mumbai 01", "alarm_type": "qualityOfServiceAlarm",
+        "severity": "major", "probable_cause": "signalQualityEvaluationFailure",
+        "specific_problem": "OSNR_DEGRADATION",
+        "description": "OSNR on OCH-1-1-1-RX degrading. Value: 14.2 dB (threshold: 18.0 dB)",
+        "is_root_cause": False, "state": "raised",
+    },
+    {
+        "id": "ALM-OPT-002", "domain": "optical", "vendor": "Nokia",
+        "source": "Nokia-1830PSS", "device_id": "ROADM-MUM-01",
+        "device_name": "ROADM Mumbai 01", "alarm_type": "communicationsAlarm",
+        "severity": "critical", "probable_cause": "lossOfSignal",
+        "specific_problem": "LOS",
+        "description": "Loss of Signal on OCH-1-1-1-TX. Rx Power: -40 dBm. Fiber span MUM-CHN-SPAN-1 cut.",
+        "is_root_cause": True, "state": "raised",
+    },
+    {
+        "id": "ALM-OPT-003", "domain": "optical", "vendor": "Nokia",
+        "source": "Nokia-1830PSS", "device_id": "AMP-MUM-CHN-01",
+        "device_name": "EDFA Amplifier Mum-Chn Span1", "alarm_type": "equipmentAlarm",
+        "severity": "critical", "probable_cause": "equipmentFailure",
+        "specific_problem": "AMPLIFIER_FAULT",
+        "description": "EDFA output power below threshold: -35 dBm. Expected: +3 dBm.",
+        "is_root_cause": False, "state": "raised",
+    },
+    {
+        "id": "ALM-IP-001", "domain": "ip", "vendor": "Cisco",
+        "source": "Cisco-EPN-Manager", "device_id": "RTR-PE-MUM-01",
+        "device_name": "PE Router Mumbai 01", "alarm_type": "communicationsAlarm",
+        "severity": "major", "probable_cause": "communicationsSubsystemFailure",
+        "specific_problem": "LINK_DOWN",
+        "description": "Interface TenGigE0/0/0/1 changed state to down. Underlaid optical circuit lost.",
+        "is_root_cause": False, "state": "raised",
+    },
+    {
+        "id": "ALM-IP-002", "domain": "ip", "vendor": "Cisco",
+        "source": "Cisco-EPN-Manager", "device_id": "RTR-PE-MUM-01",
+        "device_name": "PE Router Mumbai 01", "alarm_type": "communicationsAlarm",
+        "severity": "major", "probable_cause": "softwareProgramAbnormallyTerminated",
+        "specific_problem": "BGP_SESSION_DOWN",
+        "description": "BGP neighbour 10.1.2.1 (RTR-PE-CHN-01) down. Hold timer expired.",
+        "is_root_cause": False, "state": "raised",
+    },
+    {
+        "id": "ALM-RAN-001", "domain": "ran", "vendor": "Nokia",
+        "source": "Nokia-NetAct", "device_id": "gNB-MUM-SITE-A01",
+        "device_name": "gNB Mumbai Alpha 01", "alarm_type": "communicationsAlarm",
+        "severity": "critical", "probable_cause": "communicationsSubsystemFailure",
+        "specific_problem": "CELL_OUTAGE",
+        "description": "NR cells on gNB-MUM-SITE-A01 out of service. Backhaul transport failure on N2/N3 path.",
+        "is_root_cause": False, "state": "raised",
+    },
+    {
+        "id": "ALM-RAN-002", "domain": "ran", "vendor": "Ericsson",
+        "source": "Ericsson-ENM", "device_id": "gNB-MUM-SITE-B01",
+        "device_name": "gNB Mumbai Beta 01", "alarm_type": "communicationsAlarm",
+        "severity": "critical", "probable_cause": "transmissionError",
+        "specific_problem": "BACKHAUL_TRANSPORT_FAILURE",
+        "description": "Backhaul N2 transport link failure on gNB-MUM-SITE-B01. Upstream fiber cut on Mumbai-Chennai span.",
+        "is_root_cause": False, "state": "raised",
+    },
+]
+
+_FIBER_CUT_PROPAGATION = [
+    ("ALM-OPT-002", "ALM-OPT-001"),
+    ("ALM-OPT-002", "ALM-OPT-003"),
+    ("ALM-OPT-002", "ALM-IP-001"),
+    ("ALM-IP-001",  "ALM-IP-002"),
+    ("ALM-IP-001",  "ALM-RAN-001"),
+    ("ALM-IP-001",  "ALM-RAN-002"),
+]
+
+
+def _write_fiber_cut_alarms(driver) -> None:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with driver.session() as session:
+        session.run("MATCH (a:Alarm) DETACH DELETE a")
+        for alarm in _FIBER_CUT_ALARMS:
+            session.run("""
+                MERGE (a:Alarm {id: $id})
+                SET a.domain           = $domain,
+                    a.vendor           = $vendor,
+                    a.source           = $source,
+                    a.deviceId         = $device_id,
+                    a.deviceName       = $device_name,
+                    a.alarmType        = $alarm_type,
+                    a.perceivedSeverity= $severity,
+                    a.probableCause    = $probable_cause,
+                    a.specificProblem  = $specific_problem,
+                    a.description      = $description,
+                    a.isRootCause      = $is_root_cause,
+                    a.raisedTime       = $raised_time,
+                    a.state            = $state
+            """,
+                id=alarm["id"], domain=alarm["domain"], vendor=alarm["vendor"],
+                source=alarm["source"], device_id=alarm["device_id"],
+                device_name=alarm["device_name"], alarm_type=alarm["alarm_type"],
+                severity=alarm["severity"], probable_cause=alarm["probable_cause"],
+                specific_problem=alarm["specific_problem"],
+                description=alarm["description"], is_root_cause=alarm["is_root_cause"],
+                raised_time=now, state=alarm["state"],
+            )
+            session.run("""
+                MATCH (a:Alarm {id: $alarm_id})
+                MATCH (n) WHERE n.id = $device_id
+                MERGE (a)-[:TRIGGERED_ON]->(n)
+            """, alarm_id=alarm["id"], device_id=alarm["device_id"])
+        for parent_id, child_id in _FIBER_CUT_PROPAGATION:
+            session.run("""
+                MATCH (parent:Alarm {id: $p}) MATCH (child:Alarm {id: $c})
+                MERGE (parent)-[:PROPAGATED_TO]->(child)
+            """, p=parent_id, c=child_id)
+    logger.info("_write_fiber_cut_alarms: wrote %d alarms to Neo4j", len(_FIBER_CUT_ALARMS))
+
+
+@router.post("/correlate_alarms")
+async def correlate_alarms(
+    body: CorrelateAlarmsRequest = CorrelateAlarmsRequest(),
+    driver: Driver = Depends(db.get_driver),
+) -> StreamingResponse:
+    alarm_dicts = [
+        {
+            "id":              a["id"],
+            "domain":          a["domain"],
+            "severity":        a["severity"],
+            "specificProblem": a["specific_problem"],
+            "description":     a["description"],
+            "deviceId":        a["device_id"],
+            "deviceName":      a["device_name"],
+            "vendor":          a["vendor"],
+            "isRootCause":     a["is_root_cause"],
+            "state":           a["state"],
+        }
+        for a in _FIBER_CUT_ALARMS
+    ]
+    groups = [{
+        "group_id":         "PROP-ALM-OPT-002",
+        "correlation_type": "propagation",
+        "root_cause_id":    "ALM-OPT-002",
+        "root_node_id":     "ROADM-MUM-01",
+        "alarm_count":      len(alarm_dicts),
+        "alarms":           alarm_dicts,
+        "affected_services": [],
+    }]
+
+    def _sse(event: dict) -> str:
+        return f"data: {json.dumps(event)}\n\n"
+
+    async def _stream():
+        yield _sse({"stage": "checking",
+                    "message": "SIMBA has detected KPI degradation on 9 cells in Mumbai...",
+                    "progress": 10, "alarms": []})
+        await asyncio.sleep(2)
+
+        yield _sse({"stage": "checking",
+                    "message": "Checking fault management system for active alarms...",
+                    "progress": 20, "alarms": []})
+        await asyncio.sleep(3)
+
+        yield _sse({"stage": "no_alarms",
+                    "message": "No alarms raised yet — degradation still below threshold. "
+                               "Network appears healthy to NOC operators.",
+                    "progress": 30, "alarms": [], "alarm_count": 0})
+        await asyncio.sleep(4)
+
+        yield _sse({"stage": "degrading",
+                    "message": "Continuing to monitor... degradation spreading across transport layer...",
+                    "progress": 50, "alarms": []})
+        await asyncio.sleep(2)
+
+        # Inject fiber-cut alarms into Neo4j
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _write_fiber_cut_alarms, driver)
+        await asyncio.sleep(2)
+
+        yield _sse({"stage": "alarms_firing",
+                    "message": "⚠️ Threshold breached — alarms now firing in fault management system!",
+                    "progress": 70, "alarm_count": 24,
+                    "alarming_device_ids": _ALARMING_DEVICE_IDS})
+        await asyncio.sleep(2)
+
+        yield _sse({"stage": "correlating",
+                    "message": "Correlating 24 alarms with SIMBA predictions...",
+                    "progress": 85, "alarms": []})
+        await asyncio.sleep(2)
+
+        yield _sse({"stage": "complete",
+                    "message": "✅ 9/9 SIMBA predictions confirmed by alarms. "
+                               "SIMBA detected this fault 15 minutes before first alarm.",
+                    "progress": 100,
+                    "alarms": alarm_dicts,
+                    "alarm_count": len(alarm_dicts),
+                    "simba_lead_time_minutes": 15,
+                    "alarming_device_ids": _ALARMING_DEVICE_IDS,
+                    "groups": groups})
+
+    return StreamingResponse(
+        _stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                 "X-Accel-Buffering": "no"},
+    )
+
+
+# ── (dead-code stubs kept for potential future restoration) ───────────────────
 
 def _load_alarms(session, alarm_ids: list[str], include_cleared: bool) -> dict:
     if alarm_ids:

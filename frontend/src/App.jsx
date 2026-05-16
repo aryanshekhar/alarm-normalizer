@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useMemo } from 'react';
 import DemoControls from './components/DemoControls.jsx';
 import KPIChart from './components/KPIChart.jsx';
 import TopologyMap from './components/TopologyMap.jsx';
@@ -16,8 +16,9 @@ export default function App() {
   const [rcaResult, setRca]                 = useState(null);
   const [wsEvents, setWsEvents]             = useState([]);
   const [wsConnected, setWsConnected]       = useState(false);
-  const [leftCollapsed, setLeftCollapsed]   = useState(false);
+  const [leftCollapsed, setLeftCollapsed]       = useState(false);
   const [trainingProgress, setTrainingProgress] = useState(null);
+  const [correlationProgress, setCorrelationProgress] = useState(null);
   const trainingStartRef = useRef(null);
   const wsRef = useRef(null);
 
@@ -29,6 +30,22 @@ export default function App() {
       () => setWsConnected(false),
     );
   }, []);
+
+  const handleCorrelationProgress = useCallback((prog) => {
+    setCorrelationProgress(prog);
+  }, []);
+
+  // Node IDs to highlight on the map during / after the alarm storm
+  const alarmingNodeIds = useMemo(() => {
+    const stage = correlationProgress?.stage;
+    if (stage === 'alarms_firing' || stage === 'correlating' || stage === 'complete') {
+      return new Set(correlationProgress?.alarming_device_ids ?? []);
+    }
+    if (correlationResult?.alarming_device_ids) {
+      return new Set(correlationResult.alarming_device_ids);
+    }
+    return new Set();
+  }, [correlationProgress, correlationResult]);
 
   const handleTrainingProgress = useCallback((prog) => {
     if (prog === null) {
@@ -83,6 +100,7 @@ export default function App() {
               onTopology={setTopology}
               onInference={setInference}
               onCorrelation={setCorrelation}
+              onCorrelationProgress={handleCorrelationProgress}
               onRca={setRca}
               onConnectWs={connectWs}
               onTrainingProgress={handleTrainingProgress}
@@ -106,8 +124,13 @@ export default function App() {
 
         {/* Centre — topology + KPI ────────────────────────────────────── */}
         <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
-          <TopologyMap topology={topology} />
-          <KPIChart inferenceResult={inferenceResult} trainingProgress={trainingProgress} />
+          <TopologyMap topology={topology} alarmingNodeIds={alarmingNodeIds} />
+          <KPIChart
+            inferenceResult={inferenceResult}
+            trainingProgress={trainingProgress}
+            correlationProgress={correlationProgress}
+            correlationResult={correlationResult}
+          />
         </div>
 
         {/* Right panel — agent events + chat ─────────────────────────── */}

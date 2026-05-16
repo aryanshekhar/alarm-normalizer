@@ -82,11 +82,13 @@ const LEGEND = [
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export default function TopologyMap({ topology }) {
+export default function TopologyMap({ topology, alarmingNodeIds = new Set() }) {
   const containerRef  = useRef(null);
   const fileInputRef  = useRef(null);
+  const graphRef      = useRef(null);
   const [width, setWidth]       = useState(600);
   const [locked, setLocked]     = useState(true);
+  const [pulsePhase, setPulsePhase] = useState(0);
   // posRef: { [nodeId]: { x, y } } — single source of truth for positions.
   // Populated from localStorage on mount, updated on drag / load.
   const posRef = useRef({});
@@ -103,6 +105,16 @@ export default function TopologyMap({ topology }) {
       }
     } catch {/* ignore parse/storage errors */}
   }, []);
+
+  // Pulse animation for alarming nodes — tick every 600 ms and force canvas redraw
+  useEffect(() => {
+    if (alarmingNodeIds.size === 0) return;
+    const id = setInterval(() => {
+      setPulsePhase((p) => p + 1);
+      graphRef.current?.refresh();
+    }, 600);
+    return () => clearInterval(id);
+  }, [alarmingNodeIds]);
 
   // Track canvas container width
   useLayoutEffect(() => {
@@ -229,15 +241,27 @@ export default function TopologyMap({ topology }) {
   // ── Node painter ──────────────────────────────────────────────────────────
   const paintNode = useCallback((node, ctx, globalScale) => {
     const { color } = nodeStyle(node);
-    const r = Math.max(2, 5 / globalScale);
+    const r          = Math.max(2, 5 / globalScale);
+    const isAlarming = alarmingNodeIds.has(node.id);
+
+    if (isAlarming) {
+      // Pulsing outer halo
+      const pulse  = 0.5 + 0.5 * Math.sin(pulsePhase * Math.PI * 0.8);
+      const outerR = r * (2.0 + 0.8 * pulse);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, outerR, 0, 2 * Math.PI);
+      ctx.fillStyle = `rgba(239, 68, 68, ${0.20 + 0.20 * pulse})`;
+      ctx.fill();
+    }
+
     ctx.beginPath();
     ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
-    ctx.fillStyle   = color;
+    ctx.fillStyle   = isAlarming ? '#ef4444' : color;
     ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-    ctx.lineWidth   = 0.5 / globalScale;
+    ctx.strokeStyle = isAlarming ? 'rgba(239,68,68,0.8)' : 'rgba(0,0,0,0.45)';
+    ctx.lineWidth   = (isAlarming ? 1.2 : 0.5) / globalScale;
     ctx.stroke();
-  }, []);
+  }, [alarmingNodeIds, pulsePhase]);
 
   if (!topology?.nodes?.length) {
     return (
@@ -310,6 +334,7 @@ export default function TopologyMap({ topology }) {
           style={{ height: MAP_H }}
         >
           <ForceGraph2D
+            ref={graphRef}
             graphData={graphData}
             width={width}
             height={MAP_H}

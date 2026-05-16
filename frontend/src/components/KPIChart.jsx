@@ -94,6 +94,98 @@ function CompletionView({ elapsed }) {
   );
 }
 
+// ── Correlation narrative view ────────────────────────────────────────────────
+
+const STAGE_META = {
+  checking:      { color: 'text-blue-400',   icon: '🔍' },
+  no_alarms:     { color: 'text-green-400',  icon: '✅' },
+  degrading:     { color: 'text-yellow-400', icon: '⚠️' },
+  alarms_firing: { color: 'text-red-400',    icon: '🚨' },
+  correlating:   { color: 'text-purple-400', icon: '⟲'  },
+  complete:      { color: 'text-green-300',  icon: '✅' },
+};
+
+function CorrelationView({ correlationProgress, correlationResult }) {
+  const prog = correlationProgress ?? correlationResult;
+  if (!prog) return null;
+
+  const { stage, message, progress = 0, alarm_count = 0 } = prog;
+  const { color, icon } = STAGE_META[stage] ?? { color: 'text-gray-400', icon: '•' };
+  const isComplete   = stage === 'complete';
+  const alarmsFlash  = stage === 'alarms_firing' || stage === 'correlating' || isComplete;
+
+  return (
+    <div className={`bg-gray-900 rounded-lg border p-4 space-y-3 ${
+      isComplete ? 'border-green-700' : alarmsFlash ? 'border-red-700' : 'border-gray-700'
+    }`}>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+          Alarm Correlation
+        </h2>
+        {progress > 0 && (
+          <span className="text-xs text-gray-500">{progress}%</span>
+        )}
+      </div>
+
+      {/* Progress bar */}
+      <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-700 ease-out ${
+            isComplete ? 'bg-green-500' : alarmsFlash ? 'bg-red-500' : 'bg-blue-500'
+          }`}
+          style={{ width: `${Math.max(2, progress)}%` }}
+        />
+      </div>
+
+      {/* Alarm storm banner */}
+      {alarmsFlash && alarm_count > 0 && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded bg-red-950 border border-red-700 animate-pulse">
+          <span className="text-red-400 font-bold text-sm">⚠️ {alarm_count} ALARMS FIRING</span>
+        </div>
+      )}
+
+      {/* Current stage message */}
+      <p className={`text-sm font-medium min-h-[1.25rem] ${color}`}>{message}</p>
+
+      {/* Lead-time hero when complete */}
+      {isComplete && prog.simba_lead_time_minutes != null && (
+        <div className="mt-2 rounded bg-green-950 border border-green-700 px-4 py-3 text-center">
+          <p className="text-2xl font-bold text-green-300">
+            ✅ {prog.simba_lead_time_minutes} min early
+          </p>
+          <p className="text-xs text-green-500 mt-1">
+            SIMBA detected this fault {prog.simba_lead_time_minutes} minutes before first alarm
+          </p>
+        </div>
+      )}
+
+      {/* Alarm cascade list when complete */}
+      {isComplete && (prog.alarms ?? []).length > 0 && (
+        <div className="space-y-1.5 max-h-52 overflow-y-auto pr-0.5 mt-1">
+          {(prog.alarms ?? []).map((a) => (
+            <div key={a.id} className="flex items-start gap-2 text-xs rounded bg-gray-800 border border-gray-700 px-2 py-1.5">
+              <span className={`shrink-0 font-bold uppercase px-1 rounded text-[9px] ${
+                a.severity === 'critical' ? 'bg-red-900 text-red-300' :
+                a.severity === 'major'    ? 'bg-orange-900 text-orange-300' :
+                                            'bg-yellow-900 text-yellow-300'
+              }`}>{a.severity}</span>
+              <div className="min-w-0">
+                <span className="font-mono text-gray-200">{a.deviceId}</span>
+                <span className="text-gray-500"> · {a.domain}</span>
+                <p className="text-gray-500 truncate">{a.specificProblem.replace(/_/g, ' ')}</p>
+              </div>
+              {a.isRootCause && (
+                <span className="ml-auto shrink-0 text-[9px] px-1 rounded bg-yellow-900 text-yellow-300 font-bold">ROOT</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Anomaly list ─────────────────────────────────────────────────────────────
 
 function SeverityBadge({ severity }) {
@@ -174,19 +266,33 @@ function AnomalyListView({ inferenceResult }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function KPIChart({ inferenceResult, trainingProgress }) {
+export default function KPIChart({
+  inferenceResult,
+  trainingProgress,
+  correlationProgress,
+  correlationResult,
+}) {
   // 1. Training in progress — always takes priority
   if (trainingProgress && trainingProgress.stage !== 'complete') {
     return <TrainingView progress={trainingProgress} />;
   }
 
-  // 2. Inference has run and found anomalies
+  // 2. Correlation in progress (SSE stream active)
+  if (correlationProgress) {
+    return <CorrelationView correlationProgress={correlationProgress} correlationResult={null} />;
+  }
+
+  // 3. Correlation complete — show lead-time hero + alarm cascade
+  if (correlationResult?.stage === 'complete') {
+    return <CorrelationView correlationProgress={null} correlationResult={correlationResult} />;
+  }
+
+  // 4. Inference has run and found anomalies
   if (inferenceResult?.anomalies?.length > 0) {
     return <AnomalyListView inferenceResult={inferenceResult} />;
   }
 
-  // 3. Inference has run but network is clean
-  //    (inferenceResult !== null means it ran; length === 0 means no anomalies)
+  // 5. Inference has run but network is clean
   if (inferenceResult != null) {
     return (
       <div className="bg-gray-900 rounded-lg border border-green-900 p-4 h-36 flex flex-col items-center justify-center gap-2">
@@ -199,12 +305,12 @@ export default function KPIChart({ inferenceResult, trainingProgress }) {
     );
   }
 
-  // 4. Training just completed, waiting for inference
+  // 6. Training just completed, waiting for inference
   if (trainingProgress?.stage === 'complete') {
     return <CompletionView elapsed={trainingProgress.elapsed} />;
   }
 
-  // 5. Idle — nothing has run yet
+  // 7. Idle — nothing has run yet
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-800 p-4 h-36 flex items-center justify-center">
       <p className="text-gray-600 text-sm">Click Run Inference to analyse the network</p>

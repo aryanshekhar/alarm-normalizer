@@ -63,16 +63,36 @@ export async function runInference(kpiWindow = 'anomalous') {
   return data;
 }
 
-// ── Alarm correlation ─────────────────────────────────────────────────────────
+// ── Alarm correlation (SSE narrative stream) ──────────────────────────────────
 
-export async function correlateAlarms(alarmIds = [], includeCleared = false) {
+export async function* correlateAlarmsStream(alarmIds = []) {
   const res = await fetch(`${BASE}/tools/correlate_alarms`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ alarm_ids: alarmIds, include_cleared: includeCleared }),
+    body: JSON.stringify({ alarm_ids: alarmIds, include_cleared: false }),
   });
   if (!res.ok) throw new Error(`correlate_alarms failed: ${res.status}`);
-  return res.json();
+
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const event = JSON.parse(line.slice(6));
+          console.log('[SSE correlate_alarms]', event);
+          yield event;
+          await new Promise((r) => setTimeout(r, 0));
+        } catch { /* skip malformed */ }
+      }
+    }
+  }
 }
 
 // ── RCA ───────────────────────────────────────────────────────────────────────

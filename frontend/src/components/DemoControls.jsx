@@ -4,7 +4,7 @@ import {
   getTopology,
   trainModel,
   runInference,
-  correlateAlarms,
+  correlateAlarmsStream,
   getRca,
 } from '../api/mcpClient.js';
 
@@ -21,6 +21,7 @@ export default function DemoControls({
   onTopology,
   onInference,
   onCorrelation,
+  onCorrelationProgress,
   onRca,
   onConnectWs,
   onTrainingProgress,
@@ -68,8 +69,17 @@ export default function DemoControls({
         }
         case 'correlate': {
           const cellIds = inferenceResult?.anomalies?.map((a) => a.cell_id) ?? [];
-          const data = await correlateAlarms(cellIds);
-          onCorrelation(data);
+          flushSync(() =>
+            onCorrelationProgress({ stage: 'checking', progress: 5, message: 'Initialising correlation...', alarms: [] }),
+          );
+          for await (const event of correlateAlarmsStream(cellIds)) {
+            if (event.stage === 'error') throw new Error(event.message);
+            flushSync(() => onCorrelationProgress(event));
+            if (event.stage === 'complete') {
+              flushSync(() => onCorrelation(event));
+            }
+          }
+          onCorrelationProgress(null);
           break;
         }
         case 'rca': {
@@ -90,6 +100,7 @@ export default function DemoControls({
       setStatus(id, 'error');
       setError(e.message);
       if (id === 'train') onTrainingProgress(null);
+      if (id === 'correlate') onCorrelationProgress(null);
     }
   }
 
