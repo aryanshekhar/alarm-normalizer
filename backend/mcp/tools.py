@@ -1,8 +1,11 @@
 import asyncio
 import json
+import logging
 import threading
 from datetime import datetime, timezone
 from typing import Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import torch
@@ -92,26 +95,60 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
         create_sliding_windows, train_val_test_split, KPINormalizer,
     )
     from simba_pipeline.training.train import train_one_epoch, evaluate
-    from integrated_aiops.scenarios.fault_propagation import IntegratedDatasetGenerator
-    from integrated_aiops.topology.unified_topology import build_ran_adjacency
-
-    if demo_mode:
-        epochs = 5
+    from integrated_aiops.topology.unified_topology import (
+        build_ran_adjacency, cells_affected_by_span,
+    )
 
     emit({"stage": "preparing",
-          "message": "Analysing 30 days of network behaviour...", "progress": 5})
+          "message": "Analysing 30 days of network behaviour...", "progress": 0})
 
     if demo_mode:
-        duration_s = max(600, data_window * 20)
+        epochs     = 25
+        lr         = 0.01
+        duration_s = 6000
+
+        from integrated_aiops.scenarios.fault_propagation import (
+            generate_baseline_kpis, apply_backhaul_loss, clip_kpis,
+        )
+        kpi_data = generate_baseline_kpis(duration_s, seed=42)  # (T, N_CELLS, N_KPIS)
+        labels   = np.zeros((duration_s, kpi_data.shape[1]), dtype=np.int64)
+
+        fault_start_t  = int(duration_s * 0.70)           # 4200
+        affected_cells = cells_affected_by_span("MUM-CHN-SPAN-1")
+        for t in range(fault_start_t, duration_s):
+            for cell_idx in affected_cells:
+                kpi_data[t, cell_idx] = clip_kpis(
+                    apply_backhaul_loss(kpi_data[t, cell_idx], severity=0.9)
+                )
+        labels[fault_start_t:, affected_cells] = 1
+        logger.info(
+            "_do_training: %d anomalous timesteps, %d affected cells",
+            duration_s - fault_start_t, len(affected_cells),
+        )
     else:
+        lr         = 1e-3
         duration_s = max(3600, data_window * 200)
-    dataset    = IntegratedDatasetGenerator(duration_s=duration_s).generate()
-    kpi_data   = dataset["kpi_data"]
-    labels     = dataset["labels"]
-    adj        = build_ran_adjacency()
+        from integrated_aiops.scenarios.fault_propagation import IntegratedDatasetGenerator
+        dataset  = IntegratedDatasetGenerator(duration_s=duration_s).generate()
+        kpi_data = dataset["kpi_data"]
+        labels   = dataset["labels"]
+
+    adj = build_ran_adjacency()
 
     X, y = create_sliding_windows(kpi_data, labels, window_size=data_window)
-    X_tr, y_tr, X_val, y_val, _, _ = train_val_test_split(X, y)
+
+    if demo_mode:
+        X_tr, y_tr, X_val, y_val, _, _ = train_val_test_split(
+            X, y, train_frac=0.85, val_frac=0.10
+        )
+    else:
+        X_tr, y_tr, X_val, y_val, _, _ = train_val_test_split(X, y)
+
+    logger.info(
+        "_do_training: train=%d (anom=%d), val=%d (anom=%d)",
+        len(y_tr), int((y_tr > 0).any(axis=1).sum()),
+        len(y_val), int((y_val > 0).any(axis=1).sum()),
+    )
 
     normalizer = KPINormalizer()
     X_tr  = normalizer.fit_transform(X_tr)
@@ -135,36 +172,75 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
     model = Simba(n_kpis=n_kpis, n_cells=n_cells, window_size=data_window).to(device)
 
     class_weights = compute_class_weights(y_tr)
+    # Neutralise extreme weights for classes absent from training data
+    present = set(np.unique(y_tr.flatten()).tolist())
+    for c in range(int(class_weights.shape[0])):
+        if c not in present:
+            class_weights[c] = 1.0
+    class_weights = torch.clamp(class_weights, max=10.0)
+    logger.info("_do_training: class_weights=%s", class_weights.tolist())
+
     criterion = WeightedFocalLoss(
         n_classes=Simba.N_CLASSES, class_weights=class_weights, gamma=2.0,
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
 
     milestones = [
-        (max(1,     epochs // 3), 40, "Learning traffic patterns..."),
-        (max(2, 2 * epochs // 3), 65, "Learning signal quality baselines..."),
-        (max(3, 5 * epochs // 6), 85, "Learning capacity thresholds..."),
+        (max(1,     epochs // 5),     20, "Learning normal traffic patterns..."),
+        (max(2, 2 * epochs // 5),     40, "Learning signal quality baselines..."),
+        (max(3, 3 * epochs // 5),     60, "Learning capacity thresholds..."),
+        (max(4, 4 * epochs // 5),     80, "Calibrating anomaly detection sensitivity..."),
     ]
     sent = set()
     for epoch in range(1, epochs + 1):
         train_one_epoch(model, train_loader, optimizer, criterion, device, prior)
-        for threshold, progress, message in milestones:
-            if epoch >= threshold and progress not in sent:
+        for milestone_epoch, progress, message in milestones:
+            if epoch >= milestone_epoch and progress not in sent:
                 emit({"stage": "training", "message": message, "progress": progress})
                 sent.add(progress)
 
     _, val_metrics = evaluate(model, val_loader, criterion, device, prior)
+
+    # Calibrate detection threshold on val set
+    anomaly_threshold = 0.5
+    model.eval()
+    all_probs_list, all_labels_list = [], []
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            logits, _ = model(X_batch.to(device), prior)
+            p = F.softmax(logits, dim=-1).cpu().numpy()  # (B, N_CELLS, 3)
+            all_probs_list.append(p)
+            all_labels_list.append(y_batch.numpy())
+    all_probs_arr  = np.concatenate(all_probs_list,  axis=0)  # (N_val, N_CELLS, 3)
+    all_labels_arr = np.concatenate(all_labels_list, axis=0)  # (N_val, N_CELLS)
+    anom_probs = 1.0 - all_probs_arr[:, :, 0]                 # (N_val, N_CELLS)
+    pos_mask   = all_labels_arr > 0
+    if pos_mask.any():
+        anomaly_threshold = float(
+            np.clip(np.percentile(anom_probs[pos_mask], 20), 0.20, 0.70)
+        )
+    logger.info(
+        "_do_training: val macro_f1=%.3f anomaly_f1=%.3f threshold=%.3f",
+        val_metrics["macro_f1"], val_metrics["anomaly_f1"], anomaly_threshold,
+    )
+
+    # Store the full anomalous window (last data_window timesteps of the stream)
+    anomalous_window = kpi_data[duration_s - data_window:duration_s]
+
     ms.store(
         model=model, normalizer=normalizer, prior=prior, adjacency=adj,
         config={
             "epochs": epochs, "data_window": data_window,
             "n_cells": n_cells, "n_kpis": n_kpis,
-            "val_macro_f1":   round(float(val_metrics["macro_f1"]),   4),
-            "val_anomaly_f1": round(float(val_metrics["anomaly_f1"]), 4),
+            "val_macro_f1":      round(float(val_metrics["macro_f1"]),   4),
+            "val_anomaly_f1":    round(float(val_metrics["anomaly_f1"]), 4),
+            "anomaly_threshold": round(anomaly_threshold, 4),
         },
+        anomalous_window=anomalous_window,
     )
     emit({"stage": "complete",
-          "message": "AI engine armed — monitoring 47 cells", "progress": 100})
+          "message": "AI engine armed — monitoring 47 cells across 4 domains",
+          "progress": 100})
 
 
 @router.post("/train_model")
@@ -239,36 +315,38 @@ def run_inference(body: RunInferenceRequest) -> dict:
             detail="Model not trained yet. Call POST /tools/train_model first.",
         )
 
-    from integrated_aiops.scenarios.fault_propagation import (
-        IntegratedDatasetGenerator, generate_baseline_kpis,
-    )
+    from integrated_aiops.scenarios.fault_propagation import generate_baseline_kpis
     from integrated_aiops.topology.unified_topology import (
         N_CELLS, CELL_BY_INDEX, KPI_NAMES,
     )
 
     state       = ms.load()
     data_window = state.config["data_window"]
+    threshold   = state.config.get("anomaly_threshold", 0.5)
 
     if body.kpi_window == "healthy":
         import time
         raw = generate_baseline_kpis(
             n_timesteps=data_window, seed=int(time.time()) % 100_000
-        )  # (W, N_CELLS, N_KPIS)
+        )
     else:
-        dataset  = IntegratedDatasetGenerator(
-            duration_s=max(data_window * 15, 900)
-        ).generate()
-        kpi_data = dataset["kpi_data"]   # (T, N_CELLS, N_KPIS)
-        labels   = dataset["labels"]     # (T, N_CELLS)
+        # Use the anomalous window captured during training (last W timesteps of fault period)
+        if state.anomalous_window is not None:
+            raw = state.anomalous_window
+        else:
+            from integrated_aiops.scenarios.fault_propagation import IntegratedDatasetGenerator
+            dataset  = IntegratedDatasetGenerator(
+                duration_s=max(data_window * 15, 900)
+            ).generate()
+            kpi_data = dataset["kpi_data"]
+            labels   = dataset["labels"]
+            anomaly_ts = np.where((labels > 0).any(axis=1))[0]
+            valid      = anomaly_ts[anomaly_ts >= data_window]
+            end_t      = int(valid[0]) + 1 if len(valid) > 0 else len(kpi_data)
+            raw        = kpi_data[end_t - data_window:end_t]
 
-        # Pick first window that ends on an anomalous timestep
-        anomaly_ts = np.where((labels > 0).any(axis=1))[0]
-        valid      = anomaly_ts[anomaly_ts >= data_window]
-        end_t      = int(valid[0]) + 1 if len(valid) > 0 else len(kpi_data)
-        raw        = kpi_data[end_t - data_window:end_t]  # (W, N_CELLS, N_KPIS)
-
-    norm  = state.normalizer.transform(raw)   # (W, N_CELLS, N_KPIS)
-    x     = torch.tensor(norm, dtype=torch.float32).unsqueeze(0)  # (1, W, N, K)
+    norm  = state.normalizer.transform(raw)
+    x     = torch.tensor(norm, dtype=torch.float32).unsqueeze(0)
     prior = state.prior.to(x.device)
 
     state.model.eval()
@@ -276,28 +354,40 @@ def run_inference(body: RunInferenceRequest) -> dict:
         logits, _ = state.model(x, prior)
         probs_t   = F.softmax(logits, dim=-1)  # (1, N_CELLS, 3)
 
-    probs_np = probs_t.squeeze(0).cpu().numpy()  # (N_CELLS, 3)
-    ts       = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    probs_np    = probs_t.squeeze(0).cpu().numpy()  # (N_CELLS, 3)
+    anom_probs  = 1.0 - probs_np[:, 0]             # (N_CELLS,)
+    ts          = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Log top-5 cells by anomaly probability
+    top5 = np.argsort(anom_probs)[::-1][:5]
+    for rank, cidx in enumerate(top5):
+        cp = probs_np[cidx]
+        logger.info(
+            "run_inference top-%d: %s  P(norm)=%.3f P(pwr)=%.3f P(int)=%.3f P(anom)=%.3f",
+            rank + 1, CELL_BY_INDEX[cidx].id, cp[0], cp[1], cp[2], anom_probs[cidx],
+        )
+    logger.info("run_inference: threshold=%.3f", threshold)
 
     anomalies = []
     for cell_idx in range(N_CELLS):
-        cell_probs = probs_np[cell_idx]
-        pred       = int(cell_probs.argmax())
-        conf       = float(cell_probs[pred])
-        if pred == 0 or conf < 0.5:
+        cell_probs   = probs_np[cell_idx]
+        anomaly_prob = float(anom_probs[cell_idx])
+        if anomaly_prob < threshold:
             continue
 
-        cell     = CELL_BY_INDEX[cell_idx]
-        raw_kpis = raw[-1, cell_idx, :]  # last timestep raw values
+        # Most likely non-normal class determines fault type
+        fault_class = int(np.argmax(cell_probs[1:])) + 1
+        cell        = CELL_BY_INDEX[cell_idx]
+        raw_kpis    = raw[-1, cell_idx, :]
 
         anomalies.append({
             "cell_id":    cell.id,
             "gnb_id":     cell.gnb_id,
             "cell_index": cell_idx,
             "timestamp":  ts,
-            "fault_type": _FAULT_NAMES[pred],
-            "confidence": round(conf, 4),
-            "severity":   _confidence_to_severity(conf),
+            "fault_type": _FAULT_NAMES[fault_class],
+            "confidence": round(anomaly_prob, 4),
+            "severity":   _confidence_to_severity(anomaly_prob),
             "kpi_values": {
                 name: round(float(raw_kpis[k]), 3)
                 for k, name in enumerate(KPI_NAMES)
@@ -307,7 +397,7 @@ def run_inference(body: RunInferenceRequest) -> dict:
                 "excessive_power_reduction": round(float(cell_probs[1]), 4),
                 "interference":              round(float(cell_probs[2]), 4),
             },
-            "repair_action": _REPAIR_ACTIONS[_FAULT_NAMES[pred]],
+            "repair_action": _REPAIR_ACTIONS[_FAULT_NAMES[fault_class]],
         })
 
     return {

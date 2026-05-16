@@ -14,11 +14,12 @@ import torch
 
 @dataclass
 class ModelState:
-    model: object           # simba_pipeline.models.simba.Simba
-    normalizer: object      # simba_pipeline.data.dataset_generator.KPINormalizer
-    prior: torch.Tensor     # (N_CELLS, N_CELLS) physical adjacency prior
-    adjacency: np.ndarray   # same value, kept as numpy for serialisation
-    config: dict            # hyperparams + final val metrics
+    model: object              # simba_pipeline.models.simba.Simba
+    normalizer: object         # simba_pipeline.data.dataset_generator.KPINormalizer
+    prior: torch.Tensor        # (N_CELLS, N_CELLS) physical adjacency prior
+    adjacency: np.ndarray      # same value, kept as numpy for serialisation
+    config: dict               # hyperparams + final val metrics + anomaly_threshold
+    anomalous_window: Optional[np.ndarray] = None  # (W, N_CELLS, N_KPIS) raw KPI window
     trained_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -33,6 +34,7 @@ def store(
     prior: torch.Tensor,
     adjacency: np.ndarray,
     config: dict,
+    anomalous_window: Optional[np.ndarray] = None,
 ) -> None:
     global _state
     _state = ModelState(
@@ -41,6 +43,7 @@ def store(
         prior=prior,
         adjacency=adjacency,
         config=config,
+        anomalous_window=anomalous_window,
     )
 
 
