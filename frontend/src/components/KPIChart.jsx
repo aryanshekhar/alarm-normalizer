@@ -337,6 +337,119 @@ function AnomalyListView({ inferenceResult }) {
   );
 }
 
+// ── RCA view ──────────────────────────────────────────────────────────────────
+
+const CONF_META = {
+  low:    { pct: 33, bar: 'bg-yellow-500', text: 'text-yellow-400', label: 'Low' },
+  medium: { pct: 66, bar: 'bg-orange-500', text: 'text-orange-400', label: 'Medium' },
+  high:   { pct: 95, bar: 'bg-green-500',  text: 'text-green-400',  label: 'High' },
+};
+
+function RcaView({ rcaResult }) {
+  const {
+    rca_text,
+    recommended_action,
+    confidence = 'medium',
+    affected_cells = [],
+    propagation_path = [],
+  } = rcaResult;
+
+  const conf = CONF_META[confidence] ?? CONF_META.medium;
+
+  // Build a deduplicated step chain from propagation_path edges
+  const steps = [];
+  if (propagation_path.length > 0) {
+    steps.push(propagation_path[0].from_alarm);
+    for (const edge of propagation_path) {
+      if (steps[steps.length - 1] !== edge.to_alarm) steps.push(edge.to_alarm);
+    }
+  }
+
+  // Map alarm ID → domain for labels
+  const domainOf = {};
+  for (const e of propagation_path) {
+    domainOf[e.from_alarm] = e.from_domain;
+    domainOf[e.to_alarm]   = e.to_domain;
+  }
+
+  return (
+    <div className="bg-gray-900 rounded-lg border border-purple-800 p-4 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+          Root Cause Analysis
+        </h2>
+        <span className={`text-xs font-semibold ${conf.text}`}>{conf.label} confidence</span>
+      </div>
+
+      {/* Confidence bar */}
+      <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-700 ${conf.bar}`}
+          style={{ width: `${conf.pct}%` }}
+        />
+      </div>
+
+      {/* RCA text */}
+      <p className="text-sm text-gray-200 leading-relaxed">{rca_text}</p>
+
+      {/* Recommended action */}
+      {recommended_action && (
+        <div className="rounded bg-blue-950 border border-blue-800 px-3 py-2.5">
+          <p className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider mb-1">
+            Recommended Action
+          </p>
+          <p className="text-xs text-blue-200 leading-relaxed">{recommended_action}</p>
+        </div>
+      )}
+
+      {/* Propagation chain */}
+      {steps.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">
+            Propagation Path
+          </p>
+          <ol className="space-y-1">
+            {steps.map((alarmId, i) => (
+              <li key={alarmId} className="flex items-start gap-2 text-xs">
+                <span className="shrink-0 w-4 text-right text-gray-600">{i + 1}.</span>
+                <div>
+                  <span className="font-mono text-gray-100">{alarmId}</span>
+                  {domainOf[alarmId] && (
+                    <span className="text-gray-500"> · {domainOf[alarmId]}</span>
+                  )}
+                  {i < steps.length - 1 && (
+                    <div className="text-gray-700 text-[10px] ml-0 mt-0.5">↓</div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      {/* Affected cells */}
+      {affected_cells.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+            Affected Cells
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {affected_cells.map((c) => (
+              <span
+                key={c}
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-300"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function KPIChart({
@@ -344,30 +457,21 @@ export default function KPIChart({
   trainingProgress,
   correlationProgress,
   correlationResult,
+  rcaResult,
 }) {
-  // 1. Training in progress — always takes priority
+  // Determine the primary view (priority order)
+  let primary;
+
   if (trainingProgress && trainingProgress.stage !== 'complete') {
-    return <TrainingView progress={trainingProgress} />;
-  }
-
-  // 2. Correlation in progress (SSE stream active)
-  if (correlationProgress) {
-    return <CorrelationView correlationProgress={correlationProgress} correlationResult={null} />;
-  }
-
-  // 3. Correlation complete — show lead-time hero + alarm cascade
-  if (correlationResult?.stage === 'complete') {
-    return <CorrelationView correlationProgress={null} correlationResult={correlationResult} />;
-  }
-
-  // 4. Inference has run and found anomalies
-  if (inferenceResult?.anomalies?.length > 0) {
-    return <AnomalyListView inferenceResult={inferenceResult} />;
-  }
-
-  // 5. Inference has run but network is clean
-  if (inferenceResult != null) {
-    return (
+    primary = <TrainingView progress={trainingProgress} />;
+  } else if (correlationProgress) {
+    primary = <CorrelationView correlationProgress={correlationProgress} correlationResult={null} />;
+  } else if (correlationResult?.stage === 'complete') {
+    primary = <CorrelationView correlationProgress={null} correlationResult={correlationResult} />;
+  } else if (inferenceResult?.anomalies?.length > 0) {
+    primary = <AnomalyListView inferenceResult={inferenceResult} />;
+  } else if (inferenceResult != null) {
+    primary = (
       <div className="bg-gray-900 rounded-lg border border-green-900 p-4 h-36 flex flex-col items-center justify-center gap-2">
         <span className="text-2xl">✅</span>
         <p className="text-sm font-semibold text-green-400">
@@ -376,17 +480,20 @@ export default function KPIChart({
         <p className="text-[10px] text-gray-600">{inferenceResult.timestamp}</p>
       </div>
     );
+  } else if (trainingProgress?.stage === 'complete') {
+    primary = <CompletionView elapsed={trainingProgress.elapsed} />;
+  } else {
+    primary = (
+      <div className="bg-gray-900 rounded-lg border border-gray-800 p-4 h-36 flex items-center justify-center">
+        <p className="text-gray-600 text-sm">Click Run Inference to analyse the network</p>
+      </div>
+    );
   }
 
-  // 6. Training just completed, waiting for inference
-  if (trainingProgress?.stage === 'complete') {
-    return <CompletionView elapsed={trainingProgress.elapsed} />;
-  }
-
-  // 7. Idle — nothing has run yet
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-800 p-4 h-36 flex items-center justify-center">
-      <p className="text-gray-600 text-sm">Click Run Inference to analyse the network</p>
-    </div>
+    <>
+      {primary}
+      {rcaResult && <RcaView rcaResult={rcaResult} />}
+    </>
   );
 }

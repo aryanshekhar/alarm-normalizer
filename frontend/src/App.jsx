@@ -155,6 +155,7 @@ export default function App() {
             trainingProgress={trainingProgress}
             correlationProgress={correlationProgress}
             correlationResult={correlationResult}
+            rcaResult={rcaResult}
           />
         </div>
 

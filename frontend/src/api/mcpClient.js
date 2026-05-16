@@ -122,7 +122,9 @@ export async function getRca(incidentId = '', anomalyIds = [], alarmIds = []) {
     }),
   });
   if (!res.ok) throw new Error(`get_rca failed: ${res.status}`);
-  return res.json();
+  const data = await res.json();
+  console.log('[getRca] raw response:', data);
+  return data;
 }
 
 // ── Assistant ─────────────────────────────────────────────────────────────────
