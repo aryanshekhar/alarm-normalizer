@@ -58,7 +58,9 @@ export async function runInference(kpiWindow = 'anomalous') {
     body: JSON.stringify({ kpi_window: kpiWindow }),
   });
   if (!res.ok) throw new Error(`run_inference failed: ${res.status}`);
-  return res.json();
+  const data = await res.json();
+  console.log('[runInference] raw response:', data);
+  return data;
 }
 
 // ── Alarm correlation ─────────────────────────────────────────────────────────

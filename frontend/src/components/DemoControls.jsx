@@ -62,6 +62,7 @@ export default function DemoControls({
         }
         case 'inference': {
           const data = await runInference('anomalous');
+          console.log('[DemoControls] calling onInference with', data?.anomaly_count, 'anomalies');
           onInference(data);
           break;
         }
