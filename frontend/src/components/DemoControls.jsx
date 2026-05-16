@@ -12,7 +12,7 @@ const STAGES = [
   { id: 'topology',  label: 'Load Topology',   desc: 'Fetch network graph from Neo4j' },
   { id: 'train',     label: 'Train Model',      desc: 'Train SIMBA on 30-day KPI window' },
   { id: 'inference', label: 'Run Inference',    desc: 'Detect anomalies in current window' },
-  { id: 'correlate', label: 'Correlate Alarms', desc: 'Group related alarms by propagation' },
+  { id: 'correlate', label: 'Monitor & Correlate Alarms', desc: 'Group related alarms by propagation' },
   { id: 'rca',       label: 'Get RCA',          desc: 'Root cause analysis via LLM' },
   { id: 'monitor',   label: 'Start Monitor',    desc: 'Connect WebSocket for live events' },
 ];
