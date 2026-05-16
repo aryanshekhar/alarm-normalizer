@@ -6,6 +6,14 @@
  */
 const BASE = import.meta.env.VITE_BACKEND_URL ?? '';
 
+// ── Training mode ─────────────────────────────────────────────────────────────
+
+export async function getTrainingMode() {
+  const res = await fetch(`${BASE}/tools/training_mode`);
+  if (!res.ok) return { mode: 'demo', demo_mode: true };
+  return res.json();
+}
+
 // ── Topology ──────────────────────────────────────────────────────────────────
 
 export async function getTopology(domain = null) {

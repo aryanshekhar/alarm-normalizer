@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { flushSync } from 'react-dom';
 import {
   getTopology,
@@ -6,6 +6,7 @@ import {
   runInference,
   correlateAlarmsStream,
   getRca,
+  getTrainingMode,
 } from '../api/mcpClient.js';
 
 const STAGES = [
@@ -31,6 +32,11 @@ export default function DemoControls({
 }) {
   const [stageStatus, setStageStatus] = useState({});
   const [error, setError] = useState(null);
+  const [trainingMode, setTrainingMode] = useState(null);
+
+  useEffect(() => {
+    getTrainingMode().then((r) => setTrainingMode(r.mode)).catch(() => {});
+  }, []);
 
   function setStatus(id, status) {
     setStageStatus((s) => ({ ...s, [id]: status }));
@@ -131,7 +137,18 @@ export default function DemoControls({
             disabled={isLoading || (isMonitor && wsConnected)}
             className={cls}
           >
-            <div className="font-medium">{stage.label}</div>
+            <div className="font-medium flex items-center gap-2">
+              {stage.label}
+              {stage.id === 'train' && trainingMode && (
+                <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border ${
+                  trainingMode === 'demo'
+                    ? 'border-gray-600 bg-gray-800 text-gray-400'
+                    : 'border-blue-700 bg-blue-950 text-blue-300'
+                }`}>
+                  {trainingMode} mode
+                </span>
+              )}
+            </div>
             <div className="text-xs opacity-60 mt-0.5">{stage.desc}</div>
           </button>
         );

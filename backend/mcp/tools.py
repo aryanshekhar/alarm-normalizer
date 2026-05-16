@@ -82,6 +82,12 @@ def get_topology(
 # POST /tools/train_model
 # ─────────────────────────────────────────────────────────────────────────────
 
+@router.get("/training_mode")
+def get_training_mode() -> dict:
+    from config import settings
+    return {"demo_mode": settings.demo_mode, "mode": "demo" if settings.demo_mode else "full"}
+
+
 class TrainModelRequest(BaseModel):
     epochs: int = 5
     data_window: int = 30
@@ -96,26 +102,50 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
     from simba_pipeline.data.dataset_generator import (
         create_sliding_windows, train_val_test_split, KPINormalizer,
     )
-    from simba_pipeline.training.train import train_one_epoch, evaluate
+    from simba_pipeline.training.train import evaluate
     from integrated_aiops.topology.unified_topology import (
         build_ran_adjacency, cells_affected_by_span,
     )
+    from config import settings
+
+    # ── Select hyperparameters from config ────────────────────────────────────
+    cfg_demo = settings.demo_mode
+    if cfg_demo:
+        epochs      = settings.demo_epochs
+        duration_s  = settings.demo_kpi_stream_seconds
+        max_samples = settings.demo_max_samples
+        batch_size  = settings.demo_batch_size
+        lr          = settings.demo_learning_rate
+        mode_label  = "demo"
+    else:
+        epochs      = settings.full_epochs
+        duration_s  = settings.full_kpi_stream_seconds
+        max_samples = settings.full_max_samples
+        batch_size  = settings.full_batch_size
+        lr          = settings.full_learning_rate
+        mode_label  = "full"
+
+    logger.info(
+        "_do_training: mode=%s epochs=%d duration_s=%d max_samples=%d "
+        "batch_size=%d lr=%g",
+        mode_label, epochs, duration_s, max_samples, batch_size, lr,
+    )
+
+    wall_start = time.time()
 
     emit({"stage": "preparing",
           "message": "Analysing 30 days of network behaviour...", "progress": 0})
 
-    if demo_mode:
-        epochs     = 15
-        lr         = 1e-3
-        duration_s = 6000
-
+    # ── Data generation ───────────────────────────────────────────────────────
+    t0 = time.time()
+    if cfg_demo:
         from integrated_aiops.scenarios.fault_propagation import (
             generate_baseline_kpis, apply_backhaul_loss, clip_kpis,
         )
-        kpi_data = generate_baseline_kpis(duration_s, seed=42)  # (T, N_CELLS, N_KPIS)
+        kpi_data = generate_baseline_kpis(duration_s, seed=42)
         labels   = np.zeros((duration_s, kpi_data.shape[1]), dtype=np.int64)
 
-        fault_start_t  = int(duration_s * 0.70)           # 4200
+        fault_start_t  = int(duration_s * 0.70)
         affected_cells = cells_affected_by_span("MUM-CHN-SPAN-1")
         for t in range(fault_start_t, duration_s):
             for cell_idx in affected_cells:
@@ -128,18 +158,30 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
             duration_s - fault_start_t, len(affected_cells),
         )
     else:
-        lr         = 1e-3
-        duration_s = max(3600, data_window * 200)
         from integrated_aiops.scenarios.fault_propagation import IntegratedDatasetGenerator
         dataset  = IntegratedDatasetGenerator(duration_s=duration_s).generate()
         kpi_data = dataset["kpi_data"]
         labels   = dataset["labels"]
+    logger.info("_do_training: generate() took %.2f s", time.time() - t0)
 
-    adj = build_ran_adjacency()
-
+    # ── Sliding windows + split ───────────────────────────────────────────────
+    t0 = time.time()
+    adj  = build_ran_adjacency()
     X, y = create_sliding_windows(kpi_data, labels, window_size=data_window)
 
-    if demo_mode:
+    # Cap training samples for demo speed
+    if max_samples and len(X) > max_samples:
+        # Keep a temporal slice: first 70 % normal + last 30 % anomalous
+        n_anom  = min(int(max_samples * 0.30), int((y > 0).any(axis=1).sum()))
+        n_norm  = max_samples - n_anom
+        norm_idx = np.where((y == 0).all(axis=1))[0][:n_norm]
+        anom_idx = np.where((y > 0).any(axis=1))[0][:n_anom]
+        idx  = np.sort(np.concatenate([norm_idx, anom_idx]))
+        X, y = X[idx], y[idx]
+        logger.info("_do_training: capped to %d samples (%d normal, %d anomalous)",
+                    len(X), len(norm_idx), len(anom_idx))
+
+    if cfg_demo:
         X_tr, y_tr, X_val, y_val, _, _ = train_val_test_split(
             X, y, train_frac=0.85, val_frac=0.10
         )
@@ -147,7 +189,9 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
         X_tr, y_tr, X_val, y_val, _, _ = train_val_test_split(X, y)
 
     logger.info(
-        "_do_training: train=%d (anom=%d), val=%d (anom=%d)",
+        "_do_training: prepare_simba_data() took %.2f s  "
+        "train=%d (anom=%d) val=%d (anom=%d)",
+        time.time() - t0,
         len(y_tr), int((y_tr > 0).any(axis=1).sum()),
         len(y_val), int((y_val > 0).any(axis=1).sum()),
     )
@@ -160,21 +204,20 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
     prior  = torch.tensor(adj, dtype=torch.float32).to(device)
 
     train_loader = DataLoader(
-        TensorDataset(torch.tensor(X_tr,  dtype=torch.float32),
-                      torch.tensor(y_tr,  dtype=torch.long)),
-        batch_size=32, shuffle=True, num_workers=0,
+        TensorDataset(torch.tensor(X_tr, dtype=torch.float32),
+                      torch.tensor(y_tr, dtype=torch.long)),
+        batch_size=batch_size, shuffle=True, num_workers=0,
     )
     val_loader = DataLoader(
         TensorDataset(torch.tensor(X_val, dtype=torch.float32),
                       torch.tensor(y_val, dtype=torch.long)),
-        batch_size=32, shuffle=False, num_workers=0,
+        batch_size=batch_size, shuffle=False, num_workers=0,
     )
 
     n_cells, n_kpis = int(kpi_data.shape[1]), int(kpi_data.shape[2])
     model = Simba(n_kpis=n_kpis, n_cells=n_cells, window_size=data_window).to(device)
 
     class_weights = compute_class_weights(y_tr)
-    # Neutralise extreme weights for classes absent from training data
     present = set(np.unique(y_tr.flatten()).tolist())
     for c in range(int(class_weights.shape[0])):
         if c not in present:
@@ -187,7 +230,7 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
 
-    # Stage labels shown in the UI checklist (keyed by progress threshold)
+    # Stage labels keyed by fraction of epochs complete
     _STAGE_MESSAGES = [
         (0.20, "Learning normal traffic patterns..."),
         (0.40, "Learning signal quality baselines..."),
@@ -202,22 +245,22 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
                 return msg
         return _STAGE_MESSAGES[-1][1]
 
-    _last_emit = [time.time()]   # mutable cell for watchdog
+    _last_emit = [time.time()]
 
     def _emit_and_ping(event: dict) -> None:
         emit(event)
         _last_emit[0] = time.time()
 
+    # ── Epoch loop ────────────────────────────────────────────────────────────
     for epoch in range(1, epochs + 1):
-        # Watchdog: abort if no SSE event has been emitted for >30 s
         if time.time() - _last_emit[0] > 30:
             raise RuntimeError(
                 f"Training watchdog: no SSE event for >30 s at epoch {epoch}"
             )
 
+        epoch_t0 = time.time()
         logger.info("_do_training: starting epoch %d/%d", epoch, epochs)
 
-        # ── Inline per-batch training loop with NaN diagnostics ──────────
         model.train()
         total_loss  = 0.0
         nan_batches = 0
@@ -245,7 +288,6 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
                     float(X_batch.min()), float(X_batch.max()), float(X_batch.mean()),
                     y_batch.unique().tolist(),
                 )
-                # Skip this batch; optimizer state is clean (zero_grad already called)
                 continue
 
             loss.backward()
@@ -254,27 +296,21 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
             total_loss += batch_loss
 
             if batch_idx % 20 == 0:
-                logger.debug(
-                    "epoch %d batch %d/%d loss=%.4f",
-                    epoch, batch_idx, len(train_loader), batch_loss,
-                )
+                logger.debug("epoch %d batch %d/%d loss=%.4f",
+                             epoch, batch_idx, len(train_loader), batch_loss)
 
         good_batches = len(train_loader) - nan_batches
         epoch_loss   = total_loss / good_batches if good_batches > 0 else float("nan")
-        # ─────────────────────────────────────────────────────────────────
+        epoch_secs   = time.time() - epoch_t0
 
         if not math.isfinite(epoch_loss):
-            logger.warning(
-                "_do_training: all batches NaN at epoch %d — halving lr", epoch
-            )
+            logger.warning("_do_training: all batches NaN at epoch %d — halving lr", epoch)
             for pg in optimizer.param_groups:
                 pg["lr"] = max(pg["lr"] * 0.5, 1e-5)
 
-        logger.info("_do_training: epoch %d/%d loss=%.4f", epoch, epochs, epoch_loss)
+        logger.info("_do_training: epoch %d/%d  loss=%.4f  time=%.2f s",
+                    epoch, epochs, epoch_loss, epoch_secs)
 
-        # Emit after EVERY epoch so the watchdog always resets.
-        # progress goes from ~16 % (epoch 1) up to 90 % (epoch N), leaving
-        # room for 0 % (preparing) and 100 % (complete).
         epoch_progress = min(90, int(epoch / epochs * 80) + 10)
         _emit_and_ping({
             "stage":    "training",
@@ -282,32 +318,35 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
             "progress": epoch_progress,
         })
 
+    # ── Validation + threshold calibration ───────────────────────────────────
     _, val_metrics = evaluate(model, val_loader, criterion, device, prior)
 
-    # Calibrate detection threshold on val set
     anomaly_threshold = 0.5
     model.eval()
     all_probs_list, all_labels_list = [], []
     with torch.no_grad():
         for X_batch, y_batch in val_loader:
             logits, _ = model(X_batch.to(device), prior)
-            p = F.softmax(logits, dim=-1).cpu().numpy()  # (B, N_CELLS, 3)
+            p = F.softmax(logits, dim=-1).cpu().numpy()
             all_probs_list.append(p)
             all_labels_list.append(y_batch.numpy())
-    all_probs_arr  = np.concatenate(all_probs_list,  axis=0)  # (N_val, N_CELLS, 3)
-    all_labels_arr = np.concatenate(all_labels_list, axis=0)  # (N_val, N_CELLS)
-    anom_probs = 1.0 - all_probs_arr[:, :, 0]                 # (N_val, N_CELLS)
+    all_probs_arr  = np.concatenate(all_probs_list,  axis=0)
+    all_labels_arr = np.concatenate(all_labels_list, axis=0)
+    anom_probs = 1.0 - all_probs_arr[:, :, 0]
     pos_mask   = all_labels_arr > 0
     if pos_mask.any():
         anomaly_threshold = float(
             np.clip(np.percentile(anom_probs[pos_mask], 20), 0.20, 0.70)
         )
+
+    training_secs = round(time.time() - wall_start, 1)
     logger.info(
-        "_do_training: val macro_f1=%.3f anomaly_f1=%.3f threshold=%.3f",
+        "_do_training: DONE  mode=%s  total=%.1f s  "
+        "val macro_f1=%.3f anomaly_f1=%.3f threshold=%.3f",
+        mode_label, training_secs,
         val_metrics["macro_f1"], val_metrics["anomaly_f1"], anomaly_threshold,
     )
 
-    # Store the full anomalous window (last data_window timesteps of the stream)
     anomalous_window = kpi_data[duration_s - data_window:duration_s]
 
     ms.store(
@@ -318,12 +357,19 @@ def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) ->
             "val_macro_f1":      round(float(val_metrics["macro_f1"]),   4),
             "val_anomaly_f1":    round(float(val_metrics["anomaly_f1"]), 4),
             "anomaly_threshold": round(anomaly_threshold, 4),
+            "training_mode":     mode_label,
         },
         anomalous_window=anomalous_window,
     )
-    emit({"stage": "complete",
-          "message": "AI engine armed — monitoring 47 cells across 4 domains",
-          "progress": 100})
+    emit({
+        "stage":                 "complete",
+        "message":               "AI engine armed — monitoring 47 cells across 4 domains",
+        "progress":              100,
+        "training_time_seconds": training_secs,
+        "epochs":                epochs,
+        "samples":               len(y_tr),
+        "mode":                  mode_label,
+    })
 
 
 @router.post("/train_model")
