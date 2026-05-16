@@ -36,7 +36,14 @@ export async function* trainModel(epochs = 5, dataWindow = 30, demoMode = true) 
     buf = lines.pop(); // keep partial line
     for (const line of lines) {
       if (line.startsWith('data: ')) {
-        try { yield JSON.parse(line.slice(6)); } catch { /* skip malformed */ }
+        try {
+          const event = JSON.parse(line.slice(6));
+          console.log('[SSE train_model]', event);
+          yield event;
+          // Yield to the macrotask queue between events from the same chunk
+          // so React can flush each state update independently.
+          await new Promise((r) => setTimeout(r, 0));
+        } catch { /* skip malformed */ }
       }
     }
   }

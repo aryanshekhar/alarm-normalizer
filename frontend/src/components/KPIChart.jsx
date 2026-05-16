@@ -27,7 +27,8 @@ function stageState(stageDoneAt, pct) {
 }
 
 function TrainingView({ progress }) {
-  const pct = progress.value ?? 0;
+  // Backend SSE events use "progress"; normalized objects use "value".
+  const pct = progress.value ?? progress.progress ?? 0;
 
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-800 p-5 animate-pulse-slow">

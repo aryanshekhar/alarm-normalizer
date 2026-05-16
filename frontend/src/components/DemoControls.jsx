@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   getTopology,
   trainModel,
@@ -45,12 +46,16 @@ export default function DemoControls({
           break;
         }
         case 'train': {
-          onTrainingProgress({ value: 0, stage: 'preparing', message: 'Starting training...' });
+          flushSync(() =>
+            onTrainingProgress({ value: 0, stage: 'preparing', message: 'Starting training...' }),
+          );
           for await (const event of trainModel(5, 30, true)) {
-            if (event.progress >= 0) {
-              onTrainingProgress(event);
-            }
             if (event.stage === 'error') throw new Error(event.message);
+            if (event.progress >= 0) {
+              const normalized = { value: event.progress, stage: event.stage, message: event.message };
+              console.log('[onTrainingProgress]', normalized);
+              flushSync(() => onTrainingProgress(normalized));
+            }
           }
           onTrainingProgress(null);
           break;
