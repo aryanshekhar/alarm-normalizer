@@ -5,6 +5,7 @@ pydantic-settings>=2.2.0
 
 # LLM providers
 anthropic>=0.40.0
+openai>=1.0.0
 
 # ML / numeric
 torch>=2.0.0

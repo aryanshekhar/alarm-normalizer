@@ -55,6 +55,8 @@ class MonitorAgent:
         # cell_id → Alert (most recent firing per cell)
         self._active: dict[str, Alert] = {}
         self._lock = threading.Lock()
+        self._consec_failures = 0
+        self._pause_until     = 0.0
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -91,10 +93,21 @@ class MonitorAgent:
 
     def _loop(self) -> None:
         while self._running:
+            if time.time() < self._pause_until:
+                time.sleep(self._poll_interval)
+                continue
             try:
                 self._poll()
+                self._consec_failures = 0
             except Exception:
                 logger.exception("MonitorAgent: poll error")
+                self._consec_failures += 1
+                if self._consec_failures >= 3:
+                    logger.warning(
+                        "MonitorAgent: 3 consecutive failures — pausing 60s"
+                    )
+                    self._pause_until     = time.time() + 60
+                    self._consec_failures = 0
             time.sleep(self._poll_interval)
 
     def _poll(self) -> None:

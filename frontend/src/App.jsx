@@ -10,13 +10,15 @@ import { createMonitorSocket } from './api/mcpClient.js';
 const STAGE_ICONS = ['⬡', '⚙', '⚡', '⟲', '🔍', '📡'];
 
 export default function App() {
-  const [topology, setTopology]           = useState(null);
-  const [inferenceResult, setInference]   = useState(null);
+  const [topology, setTopology]             = useState(null);
+  const [inferenceResult, setInference]     = useState(null);
   const [correlationResult, setCorrelation] = useState(null);
-  const [rcaResult, setRca]               = useState(null);
-  const [wsEvents, setWsEvents]           = useState([]);
-  const [wsConnected, setWsConnected]     = useState(false);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rcaResult, setRca]                 = useState(null);
+  const [wsEvents, setWsEvents]             = useState([]);
+  const [wsConnected, setWsConnected]       = useState(false);
+  const [leftCollapsed, setLeftCollapsed]   = useState(false);
+  const [trainingProgress, setTrainingProgress] = useState(null);
+  const trainingStartRef = useRef(null);
   const wsRef = useRef(null);
 
   const connectWs = useCallback(() => {
@@ -26,6 +28,22 @@ export default function App() {
       () => setWsConnected(true),
       () => setWsConnected(false),
     );
+  }, []);
+
+  const handleTrainingProgress = useCallback((prog) => {
+    if (prog === null) {
+      // Stream ended — record elapsed and show completion
+      const elapsed = trainingStartRef.current
+        ? Math.round((Date.now() - trainingStartRef.current) / 1000)
+        : 0;
+      trainingStartRef.current = null;
+      setTrainingProgress({ stage: 'complete', elapsed });
+    } else {
+      if (trainingStartRef.current === null) {
+        trainingStartRef.current = Date.now();
+      }
+      setTrainingProgress(prog);
+    }
   }, []);
 
   return (
@@ -67,6 +85,7 @@ export default function App() {
               onCorrelation={setCorrelation}
               onRca={setRca}
               onConnectWs={connectWs}
+              onTrainingProgress={handleTrainingProgress}
               wsConnected={wsConnected}
               inferenceResult={inferenceResult}
               correlationResult={correlationResult}
@@ -88,7 +107,7 @@ export default function App() {
         {/* Centre — topology + KPI ────────────────────────────────────── */}
         <div className="flex-1 min-w-0 space-y-4 overflow-y-auto">
           <TopologyMap topology={topology} />
-          <KPIChart inferenceResult={inferenceResult} />
+          <KPIChart inferenceResult={inferenceResult} trainingProgress={trainingProgress} />
         </div>
 
         {/* Right panel — agent events + chat ─────────────────────────── */}

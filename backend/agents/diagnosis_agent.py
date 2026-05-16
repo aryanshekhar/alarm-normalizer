@@ -92,10 +92,18 @@ class DiagnosisAgent:
                 ),
                 driver=driver,
             )
-        except Exception:
-            logger.exception("DiagnosisAgent: get_rca failed — using fallback")
+        except Exception as exc:
+            from fastapi import HTTPException as _HTTPException
+            if isinstance(exc, _HTTPException) and exc.status_code == 503:
+                rca_text = (
+                    "LLM not configured — set OPENAI_API_KEY to enable AI diagnosis"
+                )
+                logger.warning("DiagnosisAgent: LLM not configured — returning fallback")
+            else:
+                rca_text = "LLM unavailable; manual investigation required."
+                logger.exception("DiagnosisAgent: get_rca failed — using fallback")
             rca_result = {
-                "rca_text":           "LLM unavailable; manual investigation required.",
+                "rca_text":           rca_text,
                 "recommended_action": "Check affected cells and related alarms manually.",
                 "confidence":         "low",
                 "propagation_path":   [],

@@ -80,11 +80,12 @@ def get_topology(
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TrainModelRequest(BaseModel):
-    epochs: int = 15
+    epochs: int = 5
     data_window: int = 30
+    demo_mode: bool = True
 
 
-def _do_training(epochs: int, data_window: int, emit) -> None:
+def _do_training(epochs: int, data_window: int, emit, demo_mode: bool = True) -> None:
     from torch.utils.data import DataLoader, TensorDataset
     from simba_pipeline.models.simba import Simba, WeightedFocalLoss, compute_class_weights
     from simba_pipeline.data.dataset_generator import (
@@ -94,10 +95,16 @@ def _do_training(epochs: int, data_window: int, emit) -> None:
     from integrated_aiops.scenarios.fault_propagation import IntegratedDatasetGenerator
     from integrated_aiops.topology.unified_topology import build_ran_adjacency
 
+    if demo_mode:
+        epochs = 5
+
     emit({"stage": "preparing",
           "message": "Analysing 30 days of network behaviour...", "progress": 5})
 
-    duration_s = max(3600, data_window * 200)
+    if demo_mode:
+        duration_s = max(600, data_window * 20)
+    else:
+        duration_s = max(3600, data_window * 200)
     dataset    = IntegratedDatasetGenerator(duration_s=duration_s).generate()
     kpi_data   = dataset["kpi_data"]
     labels     = dataset["labels"]
@@ -170,7 +177,7 @@ async def train_model(body: TrainModelRequest) -> StreamingResponse:
 
     def _run() -> None:
         try:
-            _do_training(body.epochs, body.data_window, _emit)
+            _do_training(body.epochs, body.data_window, _emit, body.demo_mode)
         except Exception as exc:
             _emit({"stage": "error", "message": str(exc), "progress": -1})
         finally:

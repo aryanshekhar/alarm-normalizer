@@ -10,6 +10,7 @@ from neo4j import Driver
 import db
 from agents.diagnosis_agent import DiagnosisAgent
 from agents.monitor_agent import MonitorAgent
+from llm.factory import warn_if_misconfigured
 from mcp.tools import router as tools_router
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ diagnosis_agent = DiagnosisAgent()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_driver()
+    warn_if_misconfigured()
     loop = asyncio.get_event_loop()
 
     def on_anomaly(alert) -> None:

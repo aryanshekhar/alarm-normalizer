@@ -17,11 +17,11 @@ export async function getTopology(domain = null) {
 
 // ── Training (SSE async generator) ────────────────────────────────────────────
 
-export async function* trainModel(epochs = 15, dataWindow = 30) {
+export async function* trainModel(epochs = 5, dataWindow = 30, demoMode = true) {
   const res = await fetch(`${BASE}/tools/train_model`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ epochs, data_window: dataWindow }),
+    body: JSON.stringify({ epochs, data_window: dataWindow, demo_mode: demoMode }),
   });
   if (!res.ok) throw new Error(`train_model failed: ${res.status}`);
 

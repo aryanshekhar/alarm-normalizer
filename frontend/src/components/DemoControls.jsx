@@ -22,12 +22,12 @@ export default function DemoControls({
   onCorrelation,
   onRca,
   onConnectWs,
+  onTrainingProgress,
   wsConnected,
   inferenceResult,
   correlationResult,
 }) {
   const [stageStatus, setStageStatus] = useState({});
-  const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
 
   function setStatus(id, status) {
@@ -45,14 +45,14 @@ export default function DemoControls({
           break;
         }
         case 'train': {
-          setProgress({ value: 0, message: 'Starting training...' });
-          for await (const event of trainModel(15, 30)) {
+          onTrainingProgress({ value: 0, stage: 'preparing', message: 'Starting training...' });
+          for await (const event of trainModel(5, 30, true)) {
             if (event.progress >= 0) {
-              setProgress({ value: event.progress, message: event.message });
+              onTrainingProgress(event);
             }
             if (event.stage === 'error') throw new Error(event.message);
           }
-          setProgress(null);
+          onTrainingProgress(null);
           break;
         }
         case 'inference': {
@@ -83,7 +83,7 @@ export default function DemoControls({
     } catch (e) {
       setStatus(id, 'error');
       setError(e.message);
-      setProgress(null);
+      if (id === 'train') onTrainingProgress(null);
     }
   }
 
@@ -102,7 +102,7 @@ export default function DemoControls({
 
         let cls =
           'w-full text-left px-3 py-2 rounded border text-sm transition-colors disabled:cursor-not-allowed ';
-        if (isDone)     cls += 'border-green-700 bg-green-950 text-green-300';
+        if (isDone)         cls += 'border-green-700 bg-green-950 text-green-300';
         else if (isError)   cls += 'border-red-700 bg-red-950 text-red-300';
         else if (isLoading) cls += 'border-yellow-700 bg-yellow-950 text-yellow-300 animate-pulse';
         else                cls += 'border-gray-700 bg-gray-800 text-gray-200 hover:border-gray-500';
@@ -119,21 +119,6 @@ export default function DemoControls({
           </button>
         );
       })}
-
-      {progress && (
-        <div className="space-y-1 pt-1">
-          <div className="flex justify-between text-xs text-gray-400">
-            <span className="truncate pr-2">{progress.message}</span>
-            <span className="shrink-0">{progress.value}%</span>
-          </div>
-          <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-blue-500 transition-all duration-500 ease-out"
-              style={{ width: `${Math.max(0, progress.value)}%` }}
-            />
-          </div>
-        </div>
-      )}
 
       {error && (
         <p className="text-xs text-red-400 bg-red-950 border border-red-800 rounded p-2 break-words">
