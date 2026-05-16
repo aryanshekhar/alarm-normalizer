@@ -100,15 +100,30 @@ export default function TopologyMap({
   // Incrementing this forces graphData useMemo to recompute after a load.
   const [posVersion, setPosVersion] = useState(0);
 
-  // Load saved positions from localStorage on mount
+  // Load positions on mount: public JSON → localStorage → geo-projection
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        posRef.current = parsePos(raw);
-        setPosVersion((v) => v + 1);
-      }
-    } catch {/* ignore parse/storage errors */}
+    async function loadPositions() {
+      // 1. Try the bundled default layout from the public folder
+      try {
+        const res = await fetch('/topology-layout.json');
+        if (res.ok) {
+          const json = await res.text();
+          posRef.current = parsePos(json);
+          setPosVersion((v) => v + 1);
+          return;
+        }
+      } catch { /* not found or parse error — try localStorage */ }
+
+      // 2. Fall back to any layout previously saved by the user
+      try {
+        const raw = localStorage.getItem(LS_KEY);
+        if (raw) {
+          posRef.current = parsePos(raw);
+          setPosVersion((v) => v + 1);
+        }
+      } catch { /* ignore storage errors */ }
+    }
+    loadPositions();
   }, []);
 
   // Pulse animation for alarming / root-cause nodes — tick every 600 ms
