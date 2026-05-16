@@ -15,12 +15,12 @@ class Settings(BaseSettings):
     # Training mode
     demo_mode: bool = True
 
-    # Demo-mode hyperparameters (~90 s, good for presentations)
-    demo_epochs: int             = 8
-    demo_kpi_stream_seconds: int = 600
-    demo_max_samples: int        = 200
-    demo_batch_size: int         = 128
-    demo_learning_rate: float    = 0.01
+    # Demo-mode hyperparameters (~3 min, good for presentations)
+    demo_epochs: int             = 25
+    demo_kpi_stream_seconds: int = 2400
+    demo_max_samples: int        = 800
+    demo_batch_size: int         = 32
+    demo_learning_rate: float    = 0.003
 
     # Full-mode hyperparameters (production-quality, longer run)
     full_epochs: int             = 100
