@@ -117,7 +117,7 @@ export default function DemoControls({
 
         let cls =
           'w-full text-left px-3 py-2 rounded border text-sm transition-colors disabled:cursor-not-allowed ';
-        if (isDone)         cls += 'border-green-700 bg-green-950 text-green-300';
+        if (isDone)         cls += 'border-slate-600 bg-slate-700 text-slate-200';
         else if (isError)   cls += 'border-red-700 bg-red-950 text-red-300';
         else if (isLoading) cls += 'border-yellow-700 bg-yellow-950 text-yellow-300 animate-pulse';
         else                cls += 'border-gray-700 bg-gray-800 text-gray-200 hover:border-gray-500';

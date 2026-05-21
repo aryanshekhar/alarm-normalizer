@@ -220,9 +220,23 @@ export default function TopologyMap({
       return { ...n, fx: bx + dx, fy: by + dy };
     });
 
+    // Offset alarm nodes +25/-25 from their TRIGGERED_ON parent so both are visible
+    const nodeById = {};
+    for (const n of nodes) nodeById[n.id] = n;
+    for (const edge of topology.edges ?? []) {
+      if (edge.type !== 'TRIGGERED_ON') continue;
+      const alarm  = nodeById[edge.from];
+      const parent = nodeById[edge.to];
+      if (!alarm || !parent || alarm.labels?.[0] !== 'Alarm') continue;
+      alarm.fx = (parent.fx ?? 0) + 25;
+      alarm.fy = (parent.fy ?? 0) - 25;
+      alarm._parentId = edge.to;
+    }
+
     const ids   = new Set(nodes.map((n) => n.id));
+    // Exclude TRIGGERED_ON from regular links — drawn manually as connectors
     const links = (topology.edges ?? [])
-      .filter((e) => ids.has(e.from) && ids.has(e.to))
+      .filter((e) => e.type !== 'TRIGGERED_ON' && ids.has(e.from) && ids.has(e.to))
       .map((e) => ({ source: e.from, target: e.to }));
 
     return { nodes, links };
@@ -236,6 +250,29 @@ export default function TopologyMap({
     node.fx = node.x;
     node.fy = node.y;
     posRef.current[node.id] = { x: node.x, y: node.y };
+  }, []);
+
+  // ── Alarm connector lines (drawn before nodes, in graph-space coords) ───────
+  const drawAlarmConnectors = useCallback((ctx) => {
+    const gNodes = graphRef.current?.graphData()?.nodes;
+    if (!gNodes?.length) return;
+    const byId = {};
+    for (const n of gNodes) byId[n.id] = n;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(220, 38, 38, 0.45)';
+    ctx.lineWidth = 0.7;
+    ctx.setLineDash([2, 3]);
+    for (const n of gNodes) {
+      if (n._parentId && byId[n._parentId]) {
+        const p = byId[n._parentId];
+        ctx.beginPath();
+        ctx.moveTo(n.x, n.y);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
   }, []);
 
   // ── Grid lines ────────────────────────────────────────────────────────────
@@ -269,8 +306,32 @@ export default function TopologyMap({
     [width],
   );
 
+  const drawPreFrame = useCallback((ctx) => {
+    drawGrid(ctx);
+    drawAlarmConnectors(ctx);
+  }, [drawGrid, drawAlarmConnectors]);
+
   // ── Node painter ──────────────────────────────────────────────────────────
   const paintNode = useCallback((node, ctx, globalScale) => {
+    // Alarm nodes: smaller red circle with white ! label
+    if (node.labels?.[0] === 'Alarm') {
+      const r = Math.max(1.5, 4 / globalScale);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
+      ctx.fillStyle = '#dc2626';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(220,38,38,0.9)';
+      ctx.lineWidth = 0.5 / globalScale;
+      ctx.stroke();
+      const fontSize = Math.max(3, 4.5 / globalScale);
+      ctx.font = `bold ${fontSize}px sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('!', node.x, node.y);
+      return;
+    }
+
     const { color } = nodeStyle(node);
     const r            = Math.max(2, 5 / globalScale);
     const isRootCause  = rootCauseNodeIds.has(node.id);
@@ -413,7 +474,7 @@ export default function TopologyMap({
             enableNodeDrag={!locked}
             onNodeDragEnd={onNodeDragEnd}
             enableZoomInteraction
-            onRenderFramePre={drawGrid}
+            onRenderFramePre={drawPreFrame}
           />
         </div>
 

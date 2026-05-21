@@ -67,7 +67,7 @@ function TrainingView({ progress }) {
               {state === 'current' && <span className="text-yellow-400 w-4 shrink-0 animate-spin inline-block">⟳</span>}
               {state === 'pending' && <span className="text-gray-600 w-4 shrink-0">○</span>}
               <span className={
-                state === 'done'    ? 'text-green-400' :
+                state === 'done'    ? 'text-slate-300' :
                 state === 'current' ? 'text-yellow-300' : 'text-gray-600'
               }>
                 {stage.label}
@@ -89,10 +89,10 @@ function TrainingView({ progress }) {
 
 function CompletionView({ elapsed }) {
   return (
-    <div className="bg-gray-900 rounded-lg border border-green-800 p-5">
+    <div className="bg-gray-900 rounded-lg border border-slate-700 p-5">
       <div className="flex flex-col items-center justify-center gap-3 py-4">
         <span className="text-3xl">✅</span>
-        <p className="text-base font-semibold text-green-300 text-center">
+        <p className="text-base font-semibold text-slate-100 text-center">
           AI engine armed — monitoring 47 cells across 4 domains
         </p>
         {elapsed > 0 && (
@@ -110,11 +110,11 @@ function CompletionView({ elapsed }) {
 
 const STAGE_META = {
   checking:      { color: 'text-blue-400',   icon: '🔍' },
-  no_alarms:     { color: 'text-green-400',  icon: '✅' },
+  no_alarms:     { color: 'text-slate-300',  icon: '✅' },
   degrading:     { color: 'text-yellow-400', icon: '⚠️' },
   alarms_firing: { color: 'text-red-400',    icon: '🚨' },
   correlating:   { color: 'text-purple-400', icon: '⟲'  },
-  complete:      { color: 'text-green-300',  icon: '✅' },
+  complete:      { color: 'text-slate-200',  icon: '✅' },
 };
 
 function CorrelationView({ correlationProgress, correlationResult, inferenceTimestamp }) {
@@ -136,7 +136,7 @@ function CorrelationView({ correlationProgress, correlationResult, inferenceTime
 
   return (
     <div className={`bg-gray-900 rounded-lg border p-4 space-y-3 ${
-      isComplete ? 'border-green-700' : alarmsFlash ? 'border-red-700' : 'border-gray-700'
+      isComplete ? 'border-slate-600' : alarmsFlash ? 'border-red-700' : 'border-gray-700'
     }`}>
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -150,7 +150,7 @@ function CorrelationView({ correlationProgress, correlationResult, inferenceTime
       <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-700 ease-out ${
-            isComplete ? 'bg-green-500' : alarmsFlash ? 'bg-red-500' : 'bg-blue-500'
+            isComplete ? 'bg-blue-600' : alarmsFlash ? 'bg-red-500' : 'bg-blue-500'
           }`}
           style={{ width: `${Math.max(2, progress)}%` }}
         />
@@ -168,12 +168,12 @@ function CorrelationView({ correlationProgress, correlationResult, inferenceTime
 
       {/* Lead-time hero + timeline */}
       {isComplete && leadMin != null && (
-        <div className="rounded bg-green-950 border border-green-700 px-4 py-3 space-y-2">
+        <div className="rounded bg-slate-800 border border-slate-600 px-4 py-3 space-y-2">
           <div className="text-center">
-            <p className="text-2xl font-bold text-green-300">
+            <p className="text-2xl font-bold text-slate-100">
               +{leadMin > 0 ? `${leadMin} min` : '< 1 min'} early
             </p>
-            <p className="text-xs text-green-500 mt-0.5 leading-relaxed">
+            <p className="text-xs text-blue-300 mt-0.5 leading-relaxed">
               ML Model detected network degradation{' '}
               {leadMin >= 2 ? `${leadMin} minutes` : 'several minutes'}{' '}
               before the first alarm fired — providing sufficient lead time for proactive
@@ -184,21 +184,21 @@ function CorrelationView({ correlationProgress, correlationResult, inferenceTime
           {/* Timeline graphic */}
           <div className="flex items-center gap-2 pt-1">
             <div className="flex flex-col items-center shrink-0 text-center">
-              <span className="font-bold text-green-400 text-[10px] leading-none">ML Model Alert</span>
-              <span className="text-green-600 text-[9px] font-mono">{t0Time}</span>
+              <span className="font-bold text-blue-300 text-[10px] leading-none">ML Model Alert</span>
+              <span className="text-slate-400 text-[9px] font-mono">{t0Time}</span>
             </div>
             <div className="flex-1 flex flex-col items-center gap-0.5">
-              <span className="text-green-400 text-[10px] font-mono">
+              <span className="text-blue-300 text-[10px] font-mono">
                 + {leadMin >= 2 ? `${leadMin} min` : '< 2 min'}
               </span>
               <div className="w-full flex items-center gap-0.5">
-                <div className="flex-1 border-t-2 border-dashed border-green-700" />
-                <span className="text-green-600 text-xs">►</span>
+                <div className="flex-1 border-t-2 border-dashed border-slate-500" />
+                <span className="text-slate-400 text-xs">►</span>
               </div>
             </div>
             <div className="flex flex-col items-center shrink-0 text-center">
               <span className="font-bold text-red-400 text-[10px] leading-none">First Alarm</span>
-              <span className="text-red-600 text-[9px] font-mono">{tAlarmTime}</span>
+              <span className="text-slate-400 text-[9px] font-mono">{tAlarmTime}</span>
             </div>
           </div>
         </div>
@@ -355,7 +355,7 @@ function AnomalyListView({ inferenceResult }) {
 const CONF_META = {
   low:    { pct: 33, bar: 'bg-yellow-500', text: 'text-yellow-400', label: 'Low' },
   medium: { pct: 66, bar: 'bg-orange-500', text: 'text-orange-400', label: 'Medium' },
-  high:   { pct: 95, bar: 'bg-green-500',  text: 'text-green-400',  label: 'High' },
+  high:   { pct: 95, bar: 'bg-blue-600',   text: 'text-blue-300',   label: 'High' },
 };
 
 function RcaView({ rcaResult }) {
@@ -487,9 +487,9 @@ export default function KPIChart({
     primary = <AnomalyListView inferenceResult={inferenceResult} />;
   } else if (inferenceResult != null) {
     primary = (
-      <div className="bg-gray-900 rounded-lg border border-green-900 p-4 h-36 flex flex-col items-center justify-center gap-2">
+      <div className="bg-gray-900 rounded-lg border border-slate-700 p-4 h-36 flex flex-col items-center justify-center gap-2">
         <span className="text-2xl">✅</span>
-        <p className="text-sm font-semibold text-green-400">
+        <p className="text-sm font-semibold text-slate-200">
           Network healthy — no anomalies detected
         </p>
         <p className="text-[10px] text-gray-600">{inferenceResult.timestamp}</p>
