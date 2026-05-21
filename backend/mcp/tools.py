@@ -974,25 +974,25 @@ async def correlate_alarms(
 
     async def _stream():
         yield _sse({"stage": "checking",
-                    "message": "SIMBA has detected KPI degradation on 9 cells in Mumbai...",
+                    "message": "ML Model has detected KPI degradation on 9 cells in Mumbai...",
                     "progress": 10, "alarms": []})
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
         yield _sse({"stage": "checking",
                     "message": "Checking fault management system for active alarms...",
                     "progress": 20, "alarms": []})
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
 
         yield _sse({"stage": "no_alarms",
                     "message": "No alarms raised yet — degradation still below threshold. "
                                "Network appears healthy to NOC operators.",
                     "progress": 30, "alarms": [], "alarm_count": 0})
-        await asyncio.sleep(4)
+        await asyncio.sleep(6)
 
         yield _sse({"stage": "degrading",
                     "message": "Continuing to monitor... degradation spreading across transport layer...",
                     "progress": 50, "alarms": []})
-        await asyncio.sleep(2)
+        await asyncio.sleep(4)
 
         # Inject fiber-cut alarms into Neo4j; returns suppression info
         loop = asyncio.get_running_loop()
@@ -1004,12 +1004,12 @@ async def correlate_alarms(
                     "message": f"⚠️ Threshold breached — {total_alarms} alarms now firing in fault management system!",
                     "progress": 70, "alarm_count": total_alarms,
                     "alarming_device_ids": _ALARMING_DEVICE_IDS})
-        await asyncio.sleep(2)
+        await asyncio.sleep(4)
 
         yield _sse({"stage": "correlating",
-                    "message": f"Correlating {total_alarms} alarms with SIMBA predictions...",
+                    "message": f"Correlating {total_alarms} alarms with ML Model predictions...",
                     "progress": 85, "alarms": []})
-        await asyncio.sleep(2)
+        await asyncio.sleep(4)
 
         # Calculate real lead time from model_store timestamps
         lead_time_minutes = 0
@@ -1025,13 +1025,13 @@ async def correlate_alarms(
         root_cause_alarm_ids  = suppression_info.get("root_cause_alarm_ids", [])
 
         lead_desc = (
-            f"SIMBA detected this fault {lead_time_minutes} minutes before first alarm"
+            f"ML Model detected this fault {lead_time_minutes} minutes before first alarm"
             if lead_time_minutes > 0
-            else "SIMBA detected this fault before alarms fired"
+            else "ML Model detected this fault before alarms fired"
         )
 
         yield _sse({"stage": "complete",
-                    "message": f"✅ 9/9 SIMBA predictions confirmed by alarms. {lead_desc}.",
+                    "message": f"✅ 9/9 ML Model predictions confirmed by alarms. {lead_desc}.",
                     "progress": 100,
                     "alarms": alarm_dicts,
                     "alarm_count": total_alarms,

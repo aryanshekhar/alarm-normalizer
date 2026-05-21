@@ -11,11 +11,10 @@ import {
 
 const STAGES = [
   { id: 'topology',  label: 'Load Topology',   desc: 'Fetch network graph from Neo4j' },
-  { id: 'train',     label: 'Train Model',      desc: 'Train SIMBA on 30-day KPI window' },
+  { id: 'train',     label: 'Train Model',      desc: 'Train ML Model on 30-day KPI window' },
   { id: 'inference', label: 'Run Inference',    desc: 'Detect anomalies in current window' },
   { id: 'correlate', label: 'Monitor & Correlate Alarms', desc: 'Group related alarms by propagation' },
   { id: 'rca',       label: 'Get RCA',          desc: 'Root cause analysis via LLM' },
-  { id: 'monitor',   label: 'Start Monitor',    desc: 'Connect WebSocket for live events' },
 ];
 
 export default function DemoControls({
@@ -24,9 +23,7 @@ export default function DemoControls({
   onCorrelation,
   onCorrelationProgress,
   onRca,
-  onConnectWs,
   onTrainingProgress,
-  wsConnected,
   inferenceResult,
   correlationResult,
 }) {
@@ -96,10 +93,6 @@ export default function DemoControls({
           onRca(data);
           break;
         }
-        case 'monitor': {
-          onConnectWs();
-          break;
-        }
       }
       setStatus(id, 'done');
     } catch (e) {
@@ -118,8 +111,7 @@ export default function DemoControls({
 
       {STAGES.map((stage) => {
         const status = stageStatus[stage.id] ?? 'idle';
-        const isMonitor = stage.id === 'monitor';
-        const isDone = isMonitor ? wsConnected : status === 'done';
+        const isDone = status === 'done';
         const isLoading = status === 'loading';
         const isError = status === 'error';
 
@@ -134,7 +126,7 @@ export default function DemoControls({
           <button
             key={stage.id}
             onClick={() => runStage(stage.id)}
-            disabled={isLoading || (isMonitor && wsConnected)}
+            disabled={isLoading}
             className={cls}
           >
             <div className="font-medium flex items-center gap-2">

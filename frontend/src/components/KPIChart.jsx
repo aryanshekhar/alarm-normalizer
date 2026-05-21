@@ -1,5 +1,15 @@
 import { useState } from 'react';
 
+function fmtHHMMSS(isoStr) {
+  if (!isoStr) return '--:--:--';
+  try { return new Date(isoStr).toTimeString().slice(0, 8); } catch { return '--:--:--'; }
+}
+
+function addMinutes(isoStr, mins) {
+  if (!isoStr || mins == null) return null;
+  return new Date(new Date(isoStr).getTime() + mins * 60_000).toISOString();
+}
+
 const SEV_COLOR = { high: '#ef4444', medium: '#f97316', low: '#eab308' };
 const SEV_BADGE = {
   high:   'bg-red-950    text-red-300    border-red-800',
@@ -107,7 +117,7 @@ const STAGE_META = {
   complete:      { color: 'text-green-300',  icon: '✅' },
 };
 
-function CorrelationView({ correlationProgress, correlationResult }) {
+function CorrelationView({ correlationProgress, correlationResult, inferenceTimestamp }) {
   const [showAll, setShowAll] = useState(false);
   const prog = correlationProgress ?? correlationResult;
   if (!prog) return null;
@@ -120,6 +130,9 @@ function CorrelationView({ correlationProgress, correlationResult }) {
   const allAlarms     = prog.alarms ?? [];
   const displayAlarms = showAll ? allAlarms : allAlarms.filter((a) => a.isRootCause);
   const leadMin       = prog.simba_lead_time_minutes;
+
+  const t0Time    = fmtHHMMSS(inferenceTimestamp);
+  const tAlarmTime = fmtHHMMSS(addMinutes(inferenceTimestamp, leadMin));
 
   return (
     <div className={`bg-gray-900 rounded-lg border p-4 space-y-3 ${
@@ -160,21 +173,23 @@ function CorrelationView({ correlationProgress, correlationResult }) {
             <p className="text-2xl font-bold text-green-300">
               +{leadMin > 0 ? `${leadMin} min` : '< 1 min'} early
             </p>
-            <p className="text-xs text-green-500 mt-0.5">
-              SIMBA detected this fault{' '}
-              {leadMin > 0 ? `${leadMin} minutes` : 'moments'} before first alarm
+            <p className="text-xs text-green-500 mt-0.5 leading-relaxed">
+              ML Model detected network degradation{' '}
+              {leadMin >= 2 ? `${leadMin} minutes` : 'several minutes'}{' '}
+              before the first alarm fired — providing sufficient lead time for proactive
+              intervention before customer impact
             </p>
           </div>
 
           {/* Timeline graphic */}
           <div className="flex items-center gap-2 pt-1">
             <div className="flex flex-col items-center shrink-0 text-center">
-              <span className="font-bold text-green-400 text-[10px] leading-none">SIMBA Alert</span>
-              <span className="text-green-700 text-[9px]">T+0</span>
+              <span className="font-bold text-green-400 text-[10px] leading-none">ML Model Alert</span>
+              <span className="text-green-600 text-[9px] font-mono">{t0Time}</span>
             </div>
             <div className="flex-1 flex flex-col items-center gap-0.5">
               <span className="text-green-400 text-[10px] font-mono">
-                {leadMin > 0 ? `${leadMin} min` : '< 1 min'}
+                + {leadMin >= 2 ? `${leadMin} min` : '< 2 min'}
               </span>
               <div className="w-full flex items-center gap-0.5">
                 <div className="flex-1 border-t-2 border-dashed border-green-700" />
@@ -183,9 +198,7 @@ function CorrelationView({ correlationProgress, correlationResult }) {
             </div>
             <div className="flex flex-col items-center shrink-0 text-center">
               <span className="font-bold text-red-400 text-[10px] leading-none">First Alarm</span>
-              <span className="text-red-700 text-[9px]">
-                T+{leadMin > 0 ? `${leadMin}m` : '0'}
-              </span>
+              <span className="text-red-600 text-[9px] font-mono">{tAlarmTime}</span>
             </div>
           </div>
         </div>
@@ -459,15 +472,17 @@ export default function KPIChart({
   correlationResult,
   rcaResult,
 }) {
+  const inferenceTimestamp = inferenceResult?.timestamp ?? null;
+
   // Determine the primary view (priority order)
   let primary;
 
   if (trainingProgress && trainingProgress.stage !== 'complete') {
     primary = <TrainingView progress={trainingProgress} />;
   } else if (correlationProgress) {
-    primary = <CorrelationView correlationProgress={correlationProgress} correlationResult={null} />;
+    primary = <CorrelationView correlationProgress={correlationProgress} correlationResult={null} inferenceTimestamp={inferenceTimestamp} />;
   } else if (correlationResult?.stage === 'complete') {
-    primary = <CorrelationView correlationProgress={null} correlationResult={correlationResult} />;
+    primary = <CorrelationView correlationProgress={null} correlationResult={correlationResult} inferenceTimestamp={inferenceTimestamp} />;
   } else if (inferenceResult?.anomalies?.length > 0) {
     primary = <AnomalyListView inferenceResult={inferenceResult} />;
   } else if (inferenceResult != null) {

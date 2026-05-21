@@ -2,11 +2,12 @@ import { useRef, useState, useLayoutEffect, useCallback, useMemo, useEffect } fr
 import ForceGraph2D from 'react-force-graph-2d';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const LS_KEY   = 'aiops-topology-layout';
-const LAT_MIN  = 8,  LAT_MAX = 37;
-const LON_MIN  = 68, LON_MAX = 97;
-const MAP_H    = 340;
-const PAD      = 28;
+const LS_KEY        = 'aiops-topology-layout';
+const LAT_MIN       = 8,  LAT_MAX = 37;
+const LON_MIN       = 68, LON_MAX = 97;
+const MAP_H_NORMAL  = 480;
+const MAP_H_FULL    = 720;
+const PAD           = 28;
 const FALLBACK_LAT = 22;
 const FALLBACK_LON = 82.5;
 
@@ -91,9 +92,11 @@ export default function TopologyMap({
   const containerRef  = useRef(null);
   const fileInputRef  = useRef(null);
   const graphRef      = useRef(null);
-  const [width, setWidth]       = useState(600);
-  const [locked, setLocked]     = useState(true);
+  const [width, setWidth]         = useState(600);
+  const [locked, setLocked]       = useState(true);
+  const [expanded, setExpanded]   = useState(false);
   const [pulsePhase, setPulsePhase] = useState(0);
+  const mapH = expanded ? MAP_H_FULL : MAP_H_NORMAL;
   // posRef: { [nodeId]: { x, y } } — single source of truth for positions.
   // Populated from localStorage on mount, updated on drag / load.
   const posRef = useRef({});
@@ -125,6 +128,14 @@ export default function TopologyMap({
     }
     loadPositions();
   }, []);
+
+  // Auto-fit the graph whenever positions are loaded or topology changes
+  useEffect(() => {
+    if (posVersion > 0) {
+      const tid = setTimeout(() => graphRef.current?.zoomToFit(400, 40), 120);
+      return () => clearTimeout(tid);
+    }
+  }, [posVersion]);
 
   // Pulse animation for alarming / root-cause nodes — tick every 600 ms
   useEffect(() => {
@@ -305,7 +316,7 @@ export default function TopologyMap({
 
   if (!topology?.nodes?.length) {
     return (
-      <div className="bg-gray-900 rounded-lg border border-gray-800 p-4 h-72 flex items-center justify-center">
+      <div className="bg-gray-900 rounded-lg border border-gray-800 p-4 flex items-center justify-center" style={{ height: MAP_H_NORMAL }}>
         <p className="text-gray-600 text-sm">Load topology to see network graph</p>
       </div>
     );
@@ -362,6 +373,15 @@ export default function TopologyMap({
           >
             {locked ? '🔒 Locked' : '🔓 Unlocked'}
           </button>
+
+          {/* Expand / collapse */}
+          <button
+            onClick={() => setExpanded((e) => !e)}
+            title={expanded ? 'Collapse topology panel' : 'Expand topology panel'}
+            className={`${btnBase} border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700`}
+          >
+            {expanded ? '⊟ Collapse' : '⊞ Expand'}
+          </button>
         </div>
       </div>
 
@@ -371,13 +391,13 @@ export default function TopologyMap({
         <div
           ref={containerRef}
           className="flex-1 min-w-0 overflow-hidden"
-          style={{ height: MAP_H }}
+          style={{ height: mapH }}
         >
           <ForceGraph2D
             ref={graphRef}
             graphData={graphData}
             width={width}
-            height={MAP_H}
+            height={mapH}
             backgroundColor="#111827"
             nodeCanvasObject={paintNode}
             nodeCanvasObjectMode={() => 'replace'}
