@@ -7,6 +7,7 @@ structured Diagnosis.
 """
 import logging
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
     from agents.monitor_agent import Alert
 
 logger = logging.getLogger(__name__)
+
+CACHE_TTL_S = 1800  # 30 minutes
 
 
 @dataclass
@@ -58,7 +61,8 @@ class DiagnosisAgent:
     """
 
     def __init__(self) -> None:
-        self._diagnosed_incidents: set[str] = set()
+        # incident_key → (diagnosed_at, Diagnosis)
+        self._cache: dict[str, tuple[float, "Diagnosis"]] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -71,13 +75,17 @@ class DiagnosisAgent:
         Returns a Diagnosis dataclass.
         """
         incident_key = self._incident_key(anomalies)
+        now = time.time()
         with self._lock:
-            if incident_key in self._diagnosed_incidents:
-                logger.info(
-                    "DiagnosisAgent: incident already diagnosed for cells=%s — skipping",
-                    [a.cell_id for a in anomalies],
-                )
-                return None
+            cached = self._cache.get(incident_key)
+            if cached is not None:
+                cached_at, cached_diagnosis = cached
+                if now - cached_at < CACHE_TTL_S:
+                    logger.info(
+                        "DiagnosisAgent: returning cached diagnosis for cells=%s (age=%.0fs)",
+                        [a.cell_id for a in anomalies], now - cached_at,
+                    )
+                    return cached_diagnosis
 
         driver: Driver = db.get_driver()
         incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
@@ -127,10 +135,7 @@ class DiagnosisAgent:
                 "propagation_path":   [],
             }
 
-        with self._lock:
-            self._diagnosed_incidents.add(incident_key)
-
-        return Diagnosis(
+        diagnosis = Diagnosis(
             incident_id        = incident_id,
             rca_text           = rca_result.get("rca_text", ""),
             affected_cells     = cell_ids,
@@ -140,6 +145,9 @@ class DiagnosisAgent:
             timestamp          = ts,
             alarm_groups       = groups,
         )
+        with self._lock:
+            self._cache[incident_key] = (time.time(), diagnosis)
+        return diagnosis
 
     def _fetch_alarm_ids(
         self, driver: Driver, cell_ids: list[str], gnb_ids: list[str]

@@ -29,5 +29,8 @@ class Settings(BaseSettings):
     full_batch_size: int         = 32
     full_learning_rate: float    = 0.001
 
+    # LLM rate limiting
+    max_llm_calls_per_hour: int = 20
+
 
 settings = Settings()

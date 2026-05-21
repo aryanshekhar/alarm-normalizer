@@ -15,8 +15,10 @@ import model_store
 
 logger = logging.getLogger(__name__)
 
-CONFIDENCE_THRESHOLD = 0.75
-DEDUP_WINDOW_S       = 300   # 5 minutes
+CONFIDENCE_THRESHOLD     = 0.75
+DEDUP_WINDOW_S           = 300    # 5 minutes
+DIAGNOSIS_DEDUP_WINDOW_S = 1800   # 30 minutes
+POST_DIAGNOSIS_PAUSE_S   = 600    # 10 minutes
 
 
 @dataclass
@@ -51,9 +53,11 @@ class MonitorAgent:
         self._thread: Optional[threading.Thread] = None
 
         # cell_id → last alert unix timestamp (for dedup)
-        self._seen:   dict[str, float] = {}
+        self._seen:      dict[str, float] = {}
         # cell_id → Alert (most recent firing per cell)
-        self._active: dict[str, Alert] = {}
+        self._active:    dict[str, Alert] = {}
+        # cell_id → timestamp of last completed diagnosis
+        self._diagnosed: dict[str, float] = {}
         self._lock = threading.Lock()
         self._consec_failures = 0
         self._pause_until     = 0.0
@@ -63,9 +67,20 @@ class MonitorAgent:
     def register_callback(self, callback: Callable[[Alert], None]) -> None:
         self._on_anomaly = callback
 
+    def mark_diagnosed(self, cell_ids: list[str]) -> None:
+        """Record a completed diagnosis and pause polling for POST_DIAGNOSIS_PAUSE_S."""
+        now = time.time()
+        with self._lock:
+            for cell_id in cell_ids:
+                self._diagnosed[cell_id] = now
+        self._pause_until = now + POST_DIAGNOSIS_PAUSE_S
+        logger.info(
+            "MonitorAgent: diagnosis recorded for cells=%s, pausing %ds",
+            cell_ids, POST_DIAGNOSIS_PAUSE_S,
+        )
+
     def pause(self, seconds: float) -> None:
         self._pause_until = time.time() + seconds
-        logger.info("MonitorAgent: pausing for %.0f s after diagnosis", seconds)
 
     def start(self) -> None:
         if self._running:
@@ -130,9 +145,10 @@ class MonitorAgent:
             cell_id = anomaly["cell_id"]
 
             with self._lock:
-                last_seen = self._seen.get(cell_id, 0)
-                if now - last_seen < DEDUP_WINDOW_S:
-                    continue  # duplicate within window
+                if now - self._seen.get(cell_id, 0) < DEDUP_WINDOW_S:
+                    continue  # duplicate within alert window
+                if now - self._diagnosed.get(cell_id, 0) < DIAGNOSIS_DEDUP_WINDOW_S:
+                    continue  # already diagnosed within 30 min
 
             alert = Alert(
                 cell_id    = cell_id,

@@ -1,3 +1,4 @@
+import json
 import logging
 import threading
 import time
@@ -10,28 +11,52 @@ from .claude_provider import ClaudeProvider
 
 logger = logging.getLogger(__name__)
 
-MAX_LLM_CALLS_PER_HOUR = 10
-
 _call_timestamps: deque = deque()
 _cb_lock = threading.Lock()
 
+_FALLBACK_RESPONSE = json.dumps({
+    "rca_text": "LLM rate limit reached — manual investigation required.",
+    "recommended_action": (
+        "Check affected cells and related alarms manually. "
+        "AI diagnosis will resume when the rate limit resets (next hour window)."
+    ),
+    "confidence": "low",
+})
 
-def _check_circuit_breaker() -> None:
+
+class _FallbackProvider(LLMProvider):
+    def complete(self, prompt: str, context: dict) -> str:
+        return _FALLBACK_RESPONSE
+
+
+def _rate_limit_check() -> bool:
+    """Record a call attempt. Returns True if allowed, False if limit exceeded."""
+    limit = settings.max_llm_calls_per_hour
     now = time.time()
     cutoff = now - 3600
     with _cb_lock:
         while _call_timestamps and _call_timestamps[0] < cutoff:
             _call_timestamps.popleft()
-        if len(_call_timestamps) >= MAX_LLM_CALLS_PER_HOUR:
-            raise RuntimeError(
-                f"LLM circuit breaker open: exceeded {MAX_LLM_CALLS_PER_HOUR} "
-                "calls in the last hour"
+        current = len(_call_timestamps)
+        if current >= limit:
+            logger.warning(
+                "LLM rate limit reached: %d/%d calls in last hour — returning fallback",
+                current, limit,
             )
+            return False
         _call_timestamps.append(now)
+        remaining = limit - current - 1
+        if remaining <= limit * 0.2:
+            logger.warning(
+                "LLM rate limit approaching: %d/%d calls used this hour",
+                current + 1, limit,
+            )
+        return True
 
 
 def get_llm_provider() -> LLMProvider:
-    _check_circuit_breaker()
+    if not _rate_limit_check():
+        return _FallbackProvider()
     provider = settings.llm_provider.lower()
     if provider == "claude":
         if not settings.anthropic_api_key:
