@@ -6,10 +6,11 @@ alarms, correlates them, runs an LLM root-cause analysis, and returns a
 structured Diagnosis.
 """
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from neo4j import Driver
 
@@ -56,11 +57,28 @@ class DiagnosisAgent:
     Synchronous (blocking) — run from a ThreadPoolExecutor, not the event loop.
     """
 
-    def diagnose(self, anomalies: list) -> "Diagnosis":
+    def __init__(self) -> None:
+        self._diagnosed_incidents: set[str] = set()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _incident_key(anomalies: list) -> str:
+        return "|".join(sorted({a.cell_id for a in anomalies}))
+
+    def diagnose(self, anomalies: list) -> "Optional[Diagnosis]":
         """
         anomalies: list of Alert (objects with .cell_id and .gnb_id attributes).
         Returns a Diagnosis dataclass.
         """
+        incident_key = self._incident_key(anomalies)
+        with self._lock:
+            if incident_key in self._diagnosed_incidents:
+                logger.info(
+                    "DiagnosisAgent: incident already diagnosed for cells=%s — skipping",
+                    [a.cell_id for a in anomalies],
+                )
+                return None
+
         driver: Driver = db.get_driver()
         incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -108,6 +126,9 @@ class DiagnosisAgent:
                 "confidence":         "low",
                 "propagation_path":   [],
             }
+
+        with self._lock:
+            self._diagnosed_incidents.add(incident_key)
 
         return Diagnosis(
             incident_id        = incident_id,

@@ -1,4 +1,7 @@
 import logging
+import threading
+import time
+from collections import deque
 
 from config import settings
 
@@ -7,8 +10,28 @@ from .claude_provider import ClaudeProvider
 
 logger = logging.getLogger(__name__)
 
+MAX_LLM_CALLS_PER_HOUR = 10
+
+_call_timestamps: deque = deque()
+_cb_lock = threading.Lock()
+
+
+def _check_circuit_breaker() -> None:
+    now = time.time()
+    cutoff = now - 3600
+    with _cb_lock:
+        while _call_timestamps and _call_timestamps[0] < cutoff:
+            _call_timestamps.popleft()
+        if len(_call_timestamps) >= MAX_LLM_CALLS_PER_HOUR:
+            raise RuntimeError(
+                f"LLM circuit breaker open: exceeded {MAX_LLM_CALLS_PER_HOUR} "
+                "calls in the last hour"
+            )
+        _call_timestamps.append(now)
+
 
 def get_llm_provider() -> LLMProvider:
+    _check_circuit_breaker()
     provider = settings.llm_provider.lower()
     if provider == "claude":
         if not settings.anthropic_api_key:

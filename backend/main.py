@@ -69,6 +69,9 @@ async def lifespan(app: FastAPI):
         def _diagnose() -> None:
             try:
                 diagnosis = diagnosis_agent.diagnose([alert])
+                if diagnosis is None:
+                    return
+                monitor_agent.pause(300)
                 asyncio.run_coroutine_threadsafe(
                     manager.broadcast(
                         {"type": "diagnosis_ready", "data": diagnosis.to_dict()}

@@ -63,6 +63,10 @@ class MonitorAgent:
     def register_callback(self, callback: Callable[[Alert], None]) -> None:
         self._on_anomaly = callback
 
+    def pause(self, seconds: float) -> None:
+        self._pause_until = time.time() + seconds
+        logger.info("MonitorAgent: pausing for %.0f s after diagnosis", seconds)
+
     def start(self) -> None:
         if self._running:
             return
