@@ -5,8 +5,10 @@ import ForceGraph2D from 'react-force-graph-2d';
 const LS_KEY        = 'aiops-topology-layout';
 const LAT_MIN       = 8,  LAT_MAX = 37;
 const LON_MIN       = 68, LON_MAX = 97;
-const MAP_H_NORMAL  = 480;
-const MAP_H_FULL    = 720;
+const MAP_W         = 680;  // projection coordinate space width
+const MAP_H         = 500;  // projection coordinate space height
+const MAP_H_NORMAL  = 480;  // display height (default)
+const MAP_H_FULL    = 720;  // display height (expanded)
 const PAD           = 28;
 const FALLBACK_LAT = 22;
 const FALLBACK_LON = 82.5;
