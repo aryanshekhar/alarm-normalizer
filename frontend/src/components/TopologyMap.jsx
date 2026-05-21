@@ -5,7 +5,7 @@ import ForceGraph2D from 'react-force-graph-2d';
 const LS_KEY        = 'aiops-topology-layout';
 const LAT_MIN       = 8,  LAT_MAX = 37;
 const LON_MIN       = 68, LON_MAX = 97;
-const MAP_W         = 680;  // projection coordinate space width
+const MAP_W         = 800;  // projection coordinate space width
 const MAP_H         = 500;  // projection coordinate space height
 const MAP_H_NORMAL  = 480;  // display height (default)
 const MAP_H_FULL    = 720;  // display height (expanded)
@@ -17,11 +17,11 @@ const GRID_LATS = [10, 15, 20, 25, 30, 35];
 const GRID_LONS = [70, 75, 80, 85, 90, 95];
 
 // ── Projection ────────────────────────────────────────────────────────────────
-// Maps lat/lon → graph-space (x, y). Width is the canvas CSS pixel width.
+// Maps lat/lon → fixed graph-space (x, y) using MAP_W × MAP_H coordinate space.
 // Node fx/fy and grid-line coordinates share this same space, so they always
-// align regardless of the current zoom/pan transform.
-function project(lat, lon, width) {
-  const x = PAD + ((lon - LON_MIN) / (LON_MAX - LON_MIN)) * (width - 2 * PAD);
+// align regardless of the current zoom/pan transform or canvas CSS width.
+function project(lat, lon) {
+  const x = PAD + ((lon - LON_MIN) / (LON_MAX - LON_MIN)) * (MAP_W - 2 * PAD);
   const y = PAD + ((LAT_MAX - lat) / (LAT_MAX - LAT_MIN)) * (MAP_H - 2 * PAD);
   return { x, y };
 }
@@ -94,7 +94,7 @@ export default function TopologyMap({
   const containerRef  = useRef(null);
   const fileInputRef  = useRef(null);
   const graphRef      = useRef(null);
-  const [width, setWidth]         = useState(600);
+  const [dimensions, setDimensions] = useState({ w: 800, h: 500 });
   const [locked, setLocked]       = useState(true);
   const [expanded, setExpanded]   = useState(false);
   const [pulsePhase, setPulsePhase] = useState(0);
@@ -152,7 +152,7 @@ export default function TopologyMap({
   // Track canvas container width
   useLayoutEffect(() => {
     if (!containerRef.current) return;
-    const obs = new ResizeObserver(([e]) => setWidth(e.contentRect.width));
+    const obs = new ResizeObserver(([e]) => setDimensions(d => ({ ...d, w: e.contentRect.width })));
     obs.observe(containerRef.current);
     return () => obs.disconnect();
   }, []);
@@ -217,10 +217,12 @@ export default function TopologyMap({
       const hasGeo  = n.latitude != null && n.longitude != null;
       const lat     = hasGeo ? n.latitude  : FALLBACK_LAT;
       const lon     = hasGeo ? n.longitude : FALLBACK_LON;
-      const { x: bx, y: by }  = project(lat, lon, width);
+      const { x: bx, y: by }  = project(lat, lon);
       const { dx, dy }        = hasGeo ? { dx: 0, dy: 0 } : jitter(n.id ?? '');
       return { ...n, fx: bx + dx, fy: by + dy };
     });
+
+    console.log('[TopologyMap] first 3 nodes:', nodes.slice(0, 3).map(n => ({ id: n.id, fx: n.fx, fy: n.fy })));
 
     // Offset alarm nodes +25/-25 from their TRIGGERED_ON parent so both are visible
     const nodeById = {};
@@ -243,7 +245,7 @@ export default function TopologyMap({
 
     return { nodes, links };
     // posVersion triggers recompute when positions are loaded from file/LS
-  }, [topology, width, posVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [topology, posVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Drag end — pin node at dropped position ───────────────────────────────
   const onNodeDragEnd = useCallback((node) => {
@@ -256,7 +258,7 @@ export default function TopologyMap({
 
   // ── Alarm connector lines (drawn before nodes, in graph-space coords) ───────
   const drawAlarmConnectors = useCallback((ctx) => {
-    const gNodes = graphRef.current?.graphData()?.nodes;
+    const gNodes = graphData.nodes;
     if (!gNodes?.length) return;
     const byId = {};
     for (const n of gNodes) byId[n.id] = n;
@@ -275,7 +277,7 @@ export default function TopologyMap({
     }
     ctx.setLineDash([]);
     ctx.restore();
-  }, []);
+  }, [graphData]);
 
   // ── Grid lines ────────────────────────────────────────────────────────────
   // onRenderFramePre receives a canvas ctx that has already been transformed
@@ -292,20 +294,20 @@ export default function TopologyMap({
       ctx.textBaseline = 'middle';
 
       for (const lat of GRID_LATS) {
-        const { x: x0, y } = project(lat, LON_MIN, width);
-        const { x: x1 }    = project(lat, LON_MAX, width);
+        const { x: x0, y } = project(lat, LON_MIN);
+        const { x: x1 }    = project(lat, LON_MAX);
         ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
         ctx.fillText(`${lat}°N`, x0 - 12, y);
       }
       for (const lon of GRID_LONS) {
-        const { x, y: y0 } = project(LAT_MAX, lon, width);
-        const { y: y1 }    = project(LAT_MIN, lon, width);
+        const { x, y: y0 } = project(LAT_MAX, lon);
+        const { y: y1 }    = project(LAT_MIN, lon);
         ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
         ctx.fillText(`${lon}°E`, x - 3, y1 + 7);
       }
       ctx.restore();
     },
-    [width],
+    [],
   );
 
   const drawPreFrame = useCallback((ctx) => {
@@ -459,7 +461,7 @@ export default function TopologyMap({
           <ForceGraph2D
             ref={graphRef}
             graphData={graphData}
-            width={width}
+            width={dimensions.w}
             height={mapH}
             backgroundColor="#111827"
             nodeCanvasObject={paintNode}
